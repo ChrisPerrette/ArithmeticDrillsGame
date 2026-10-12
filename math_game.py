@@ -1,59 +1,349 @@
 import tkinter as tk
-from tkinter import ttk
+import tkinter.font as tkfont
 import tkinter.messagebox as messagebox
+from fractions import Fraction
 import random
 import json
 import os
 
-# File paths for saving data
+# File paths for saving data (original four files unchanged, so existing scores carry over)
 SETTINGS_FILE = "settings.json"
 SCORE_FILES = {
     "+": "High_Scores_Add.json",
     "–": "High_Scores_Sub.json",
     "×": "High_Scores_Mul.json",
-    "÷": "High_Scores_Div.json"
+    "÷": "High_Scores_Div.json",
+    "x²": "High_Scores_Exp.json",
+    "( )": "High_Scores_Order.json",
+    "x": "High_Scores_Solve.json",
+    "½": "High_Scores_Frac.json",
 }
 
-# Color Palette
-BG_COLOR = "#87CEEB" # Sky Blue
-TXT_COLOR = "#000080" # Navy Blue
-BTN_BG = "#FFD700" # Gold
-BTN_ADD = "#FF6347" # Tomato Red
-BTN_SUB = "#32CD32" # Lime Green
-BTN_MUL = "#1E90FF" # Dodger Blue
-BTN_DIV = "#FFA500" # Orange
+DEFAULT_SETTINGS = {
+    "min_val": 0,
+    "max_val": 12,
+    "game_time": 90,
+    "password": "password",
+    "allow_negatives": False,
+    "two_step": True,
+    "unlike_denominators": True,
+}
 
+# ---------------------------------------------------------------------------
+# Theme: chalkboard green header, cool paper background, pencil-yellow accent
+# ---------------------------------------------------------------------------
+CHALK = "#1E3A34"       # chalkboard green (headers, primary buttons)
+CHALK_LT = "#2B5047"    # lighter chalkboard (buttons on the header)
+CHALK_TEXT = "#B9CEC6"  # soft chalk text for subtitles
+PAPER = "#EDF1F4"       # page background
+SURFACE = "#FFFFFF"     # cards
+BORDER = "#D3DCE2"
+INK = "#1C2B33"         # main text
+MUTED = "#5E6E78"       # secondary text
+PENCIL = "#F2B705"      # pencil-yellow accent stripe
+SOFT = "#E3E9ED"        # neutral button fill
+FIELD = "#F7F9FA"       # input fill
+SUCCESS = "#2E8B57"
+DANGER = "#C0392B"
+
+# key: (name, color, tile symbol, instruction shown under each problem)
+CATEGORY_INFO = {
+    "+": ("Addition", "#2E7D4F", "+", "Find the sum."),
+    "–": ("Subtraction", "#B5472E", "\u2212", "Find the difference."),
+    "×": ("Multiplication", "#2F5D9E", "×", "Find the product."),
+    "÷": ("Division", "#7A4E9C", "÷", "Find the quotient."),
+    "x²": ("Exponents & roots", "#0F7C7A", "x²", "Evaluate the power or square root."),
+    "( )": ("Order of operations", "#9C6A12", "( )", "Use the order of operations."),
+    "x": ("Solve for x", "#4A5560", "x = ?", "Find the value of x."),
+    "½": ("Fractions", "#A3365F", "½", "Answers are in lowest terms."),
+}
+CATEGORY_ORDER = ["+", "–", "×", "÷", "x²", "( )", "x", "½"]
+
+MINUS = "\u2212"  # true minus sign, easier to read than a hyphen
+FONT_FAMILY = "Arial"
+
+
+def pick_font(root):
+    """Use the nicest sans-serif installed on this computer."""
+    global FONT_FAMILY
+    available = set(tkfont.families(root))
+    for name in ("Segoe UI", "Avenir Next", "Helvetica Neue", "Noto Sans",
+                 "DejaVu Sans", "Helvetica", "Arial"):
+        if name in available:
+            FONT_FAMILY = name
+            return
+
+
+def F(size, weight="normal"):
+    return (FONT_FAMILY, size, weight)
+
+
+def shade(hex_color, factor):
+    """Darken (negative factor) or lighten (positive factor) a hex color."""
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    if factor < 0:
+        r, g, b = (int(c * (1 + factor)) for c in (r, g, b))
+    else:
+        r, g, b = (int(c + (255 - c) * factor) for c in (r, g, b))
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def load_scores(category):
+    filename = SCORE_FILES[category]
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+# ---------------------------------------------------------------------------
+# Number formatting
+# ---------------------------------------------------------------------------
+def fmt_num(v):
+    """Format an int or Fraction with a real minus sign; fractions in lowest terms."""
+    if isinstance(v, Fraction):
+        if v.denominator == 1:
+            v = v.numerator
+        else:
+            text = f"{abs(v.numerator)}/{v.denominator}"
+            return MINUS + text if v < 0 else text
+    return f"{MINUS}{abs(v)}" if v < 0 else str(v)
+
+
+def fmt_term(v):
+    """Wrap negative numbers in parentheses when they follow an operator, e.g. 5 + (−3)."""
+    text = fmt_num(v)
+    return f"({text})" if v < 0 else text
+
+
+def fmt_raw_fraction(signed_num, den):
+    """Show a fraction exactly as generated (not simplified), e.g. 2/4."""
+    text = f"{abs(signed_num)}/{den}"
+    return MINUS + text if signed_num < 0 else text
+
+
+def fmt_linear(a, k):
+    """Format ax + k, e.g. 3x − 4, −x + 2, x."""
+    if a == 1:
+        text = "x"
+    elif a == -1:
+        text = MINUS + "x"
+    else:
+        text = f"{fmt_num(a)}x"
+    if k > 0:
+        text += f" + {k}"
+    elif k < 0:
+        text += f" {MINUS} {abs(k)}"
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Reusable widgets
+# ---------------------------------------------------------------------------
+class FlatButton(tk.Label):
+    """A flat, colored button with a hover state.
+
+    Built on a Label so colors render the same on Windows, macOS and Linux
+    (macOS ignores background colors on regular tk.Buttons).
+    """
+
+    def __init__(self, parent, text="", command=None, bg=CHALK, fg="white",
+                 hover_bg=None, font=None, padx=18, pady=10, **kw):
+        super().__init__(parent, text=text, bg=bg, fg=fg, font=font or F(12, "bold"),
+                         padx=padx, pady=pady, cursor="hand2", **kw)
+        self._base = bg
+        self._hover = hover_bg or shade(bg, -0.12)
+        self._command = command
+        self.bind("<Enter>", lambda e: self.configure(bg=self._hover))
+        self.bind("<Leave>", lambda e: self.configure(bg=self._base))
+        self.bind("<ButtonRelease-1>", self._on_click)
+
+    def _on_click(self, event):
+        inside = 0 <= event.x <= self.winfo_width() and 0 <= event.y <= self.winfo_height()
+        if inside and self._command:
+            self._command()
+
+    def set_colors(self, bg, fg=None, hover_bg=None):
+        self._base = bg
+        self._hover = hover_bg or shade(bg, -0.12)
+        self.configure(bg=bg)
+        if fg:
+            self.configure(fg=fg)
+
+
+class Toggle(FlatButton):
+    """An On/Off switch for settings."""
+
+    def __init__(self, parent, value=False):
+        super().__init__(parent, "", self.flip, font=F(11, "bold"), padx=0, pady=6, width=6)
+        self.set(value)
+
+    def flip(self):
+        self.set(not self.value)
+
+    def set(self, value):
+        self.value = bool(value)
+        if self.value:
+            self.set_colors(SUCCESS, "white")
+            self.config(text="On")
+        else:
+            self.set_colors(SOFT, MUTED)
+            self.config(text="Off")
+
+
+class OperationTile(tk.Frame):
+    """Large clickable tile for choosing a drill on the main menu."""
+
+    def __init__(self, parent, symbol, name, color, command):
+        super().__init__(parent, bg=color, cursor="hand2")
+        self.color = color
+        self.hover = shade(color, -0.12)
+        self.command = command
+
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=3)
+        self.rowconfigure(1, weight=1)
+
+        self.sym = tk.Label(self, text=symbol, font=F(40, "bold"), bg=color, fg="white", cursor="hand2")
+        self.sym.grid(row=0, column=0, sticky="s", pady=(8, 0))
+        self.name = tk.Label(self, text=name, font=F(13, "bold"), bg=color, fg=shade(color, 0.78),
+                             cursor="hand2", wraplength=150, justify="center")
+        self.name.grid(row=1, column=0, sticky="n", pady=(0, 12), padx=6)
+
+        for w in (self, self.sym, self.name):
+            w.bind("<Enter>", lambda e: self._paint(self.hover))
+            w.bind("<Leave>", lambda e: self._paint(self.color))
+            w.bind("<Button-1>", lambda e: self.command())
+
+    def _paint(self, color):
+        for w in (self, self.sym, self.name):
+            w.configure(bg=color)
+
+
+class Header(tk.Frame):
+    """Chalkboard header bar with a title, subtitle, action buttons and accent stripe."""
+
+    def __init__(self, parent, title, subtitle="", accent=PENCIL):
+        super().__init__(parent, bg=CHALK)
+        self.columnconfigure(0, weight=1)
+
+        text_box = tk.Frame(self, bg=CHALK)
+        text_box.grid(row=0, column=0, sticky="w", padx=28, pady=(16, 14))
+        self.title_lbl = tk.Label(text_box, text=title, font=F(22, "bold"), bg=CHALK, fg="white")
+        self.title_lbl.pack(anchor="w")
+        self.subtitle_lbl = tk.Label(text_box, text=subtitle, font=F(11), bg=CHALK, fg=CHALK_TEXT)
+        self.subtitle_lbl.pack(anchor="w")
+
+        self.actions = tk.Frame(self, bg=CHALK)
+        self.actions.grid(row=0, column=1, sticky="e", padx=24)
+
+        self.stripe = tk.Frame(self, bg=accent, height=5)
+        self.stripe.grid(row=1, column=0, columnspan=2, sticky="ew")
+
+    def set(self, title=None, subtitle=None, accent=None):
+        if title is not None:
+            self.title_lbl.config(text=title)
+        if subtitle is not None:
+            self.subtitle_lbl.config(text=subtitle)
+        if accent is not None:
+            self.stripe.config(bg=accent)
+
+    def add_action(self, text, command):
+        btn = FlatButton(self.actions, text, command, bg=CHALK_LT, fg="white",
+                         font=F(11, "bold"), padx=14, pady=8)
+        btn.pack(side="left", padx=(8, 0))
+        return btn
+
+
+def card(parent, **kw):
+    return tk.Frame(parent, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER,
+                    highlightcolor=BORDER, **kw)
+
+
+def styled_entry(parent, font=None, **kw):
+    return tk.Entry(parent, font=font or F(14), justify="center", relief="flat",
+                    bg=FIELD, fg=INK, insertbackground=INK,
+                    highlightthickness=2, highlightbackground=BORDER, highlightcolor=CHALK, **kw)
+
+
+def make_dialog(controller, title, heading, subtitle=None):
+    win = tk.Toplevel(controller)
+    win.title(title)
+    win.configure(bg=SURFACE)
+    win.resizable(False, False)
+    win.transient(controller)
+
+    top = tk.Frame(win, bg=CHALK)
+    top.pack(fill="x")
+    tk.Label(top, text=heading, font=F(15, "bold"), bg=CHALK, fg="white").pack(
+        anchor="w", padx=22, pady=(14, 0 if subtitle else 14))
+    if subtitle:
+        tk.Label(top, text=subtitle, font=F(10), bg=CHALK, fg=CHALK_TEXT).pack(anchor="w", padx=22, pady=(0, 12))
+    tk.Frame(win, bg=PENCIL, height=4).pack(fill="x")
+
+    body = tk.Frame(win, bg=SURFACE)
+    body.pack(fill="both", expand=True, padx=22, pady=18)
+    win.bind("<Escape>", lambda e: win.destroy())
+    return win, body
+
+
+def _safe_grab(win):
+    if not win.winfo_exists():
+        return
+    try:
+        win.grab_set()
+    except tk.TclError:
+        win.after(50, lambda: _safe_grab(win))
+
+
+def center_dialog(win, controller):
+    win.update_idletasks()
+    w, h = win.winfo_reqwidth(), win.winfo_reqheight()
+    x = controller.winfo_rootx() + (controller.winfo_width() - w) // 2
+    y = controller.winfo_rooty() + (controller.winfo_height() - h) // 3
+    win.geometry(f"+{max(x, 0)}+{max(y, 0)}")
+    _safe_grab(win)
+
+
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 class MathGameApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Math Game")
-        self.geometry("800x600")
-        self.minsize(600, 400)
-        self.configure(bg=BG_COLOR)
-        
+        pick_font(self)
+        self.title("Arithmetic Drills")
+        self.geometry("1000x700")
+        self.minsize(820, 620)
+        self.configure(bg=PAPER)
+
         # Make the main window grid resizable
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
-        
+
         self.load_settings()
-        
+
         # Container for all frames
-        self.container = tk.Frame(self, bg=BG_COLOR)
+        self.container = tk.Frame(self, bg=PAPER)
         self.container.grid(row=0, column=0, sticky="nsew")
         self.container.rowconfigure(0, weight=1)
         self.container.columnconfigure(0, weight=1)
-        
+
         self.frames = {}
-        for F in (MainMenu, GameScreen, ScoreboardScreen, SettingsScreen):
-            page_name = F.__name__
-            frame = F(parent=self.container, controller=self)
+        for F_ in (MainMenu, GameScreen, ScoreboardScreen, SettingsScreen):
+            page_name = F_.__name__
+            frame = F_(parent=self.container, controller=self)
             self.frames[page_name] = frame
             frame.grid(row=0, column=0, sticky="nsew")
-            
+
         self.show_frame("MainMenu")
 
     def load_settings(self):
-        self.settings = {"min_val": 0, "max_val": 12, "game_time": 90, "password": "password"}
+        self.settings = dict(DEFAULT_SETTINGS)
         if os.path.exists(SETTINGS_FILE):
             try:
                 with open(SETTINGS_FILE, "r") as f:
@@ -73,167 +363,226 @@ class MathGameApp(tk.Tk):
             frame.on_show(*args)
         frame.tkraise()
 
+
 class MainMenu(tk.Frame):
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, bg=PAPER)
         self.controller = controller
-        self.configure(bg=BG_COLOR)
-        
-        # Configure scaling
-        self.rowconfigure(0, weight=1)
-        self.rowconfigure(1, weight=3)
-        self.rowconfigure(2, weight=1)
-        self.rowconfigure(3, weight=1)
+
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        self.columnconfigure(2, weight=1)
-        
-        # Main Title
-        title_lbl = tk.Label(self, text="ARITHMETIC DRILLS", font=("Arial", 36, "bold"), 
-                             bg=BG_COLOR, fg="#FF0000")
-        title_lbl.grid(row=0, column=0, columnspan=2, sticky="w", padx=30, pady=10)
-        
-        # Gear Button (Settings) in Top Right
-        gear_btn = tk.Button(self, text="\u2699", font=("Arial", 24, "bold"), relief="raised",
-                             bg=BTN_BG, fg=TXT_COLOR, activebackground="white",
-                             command=self.prompt_password)
-        gear_btn.grid(row=0, column=2, sticky="ne", padx=10, pady=10)
-        
-        # 2x2 Grid for Game Categories
-        grid_frame = tk.Frame(self, bg=BG_COLOR)
-        grid_frame.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=50, pady=20)
-        for i in range(2):
-            grid_frame.rowconfigure(i, weight=1)
-            grid_frame.columnconfigure(i, weight=1)
-            
-        btn_font = ("Arial", 48, "bold")
-        tk.Button(grid_frame, text="+", font=btn_font, bg=BTN_ADD, fg="white", activebackground="#FF8C00",
-                  command=lambda: controller.show_frame("GameScreen", "+")).grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        tk.Button(grid_frame, text="–", font=btn_font, bg=BTN_SUB, fg="white", activebackground="#00FA9A",
-                  command=lambda: controller.show_frame("GameScreen", "–")).grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
-        tk.Button(grid_frame, text="×", font=btn_font, bg=BTN_MUL, fg="white", activebackground="#00BFFF",
-                  command=lambda: controller.show_frame("GameScreen", "×")).grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
-        tk.Button(grid_frame, text="÷", font=btn_font, bg=BTN_DIV, fg="white", activebackground="#FFD700",
-                  command=lambda: controller.show_frame("GameScreen", "÷")).grid(row=1, column=1, sticky="nsew", padx=10, pady=10)
-        
-        # Scoreboards & Quit Buttons Frame
-        bottom_btn_frame = tk.Frame(self, bg=BG_COLOR)
-        bottom_btn_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=50, pady=10)
-        bottom_btn_frame.rowconfigure(0, weight=1)
-        bottom_btn_frame.columnconfigure(0, weight=1)
-        bottom_btn_frame.columnconfigure(1, weight=1)
-        
-        tk.Button(bottom_btn_frame, text="Scoreboards", font=("Arial", 18, "bold"), bg=BTN_BG, fg=TXT_COLOR,
-                  command=lambda: controller.show_frame("ScoreboardScreen")).grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
-        tk.Button(bottom_btn_frame, text="Quit Game", font=("Arial", 18, "bold"), bg="#FF0000", fg="white",
-                  command=controller.quit).grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        self.rowconfigure(1, weight=1)
+
+        header = Header(self, "Arithmetic Drills",
+                        "Timed math practice, from basic facts through pre-algebra. Pick a drill to start.")
+        header.grid(row=0, column=0, sticky="ew")
+        header.add_action("\u2699  Settings", self.prompt_password)
+
+        # 4x2 grid of drill tiles: arithmetic on top, pre-algebra below
+        body = tk.Frame(self, bg=PAPER)
+        body.grid(row=1, column=0, sticky="nsew", padx=40, pady=(24, 10))
+        for c in range(4):
+            body.columnconfigure(c, weight=1, uniform="tile")
+        for r in range(2):
+            body.rowconfigure(r, weight=1, uniform="row")
+
+        for idx, key in enumerate(CATEGORY_ORDER):
+            name, color, symbol, _ = CATEGORY_INFO[key]
+            tile = OperationTile(body, symbol, name, color,
+                                 lambda k=key: controller.show_frame("GameScreen", k))
+            tile.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=7, pady=7)
+
+        # Scoreboards & Quit buttons
+        footer = tk.Frame(self, bg=PAPER)
+        footer.grid(row=2, column=0, sticky="ew", padx=47, pady=(4, 26))
+        footer.columnconfigure(0, weight=3)
+        footer.columnconfigure(1, weight=1)
+
+        FlatButton(footer, "View scoreboards", lambda: controller.show_frame("ScoreboardScreen"),
+                   bg=CHALK, fg="white", font=F(14, "bold"), pady=14).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8))
+        FlatButton(footer, "Quit", controller.quit, bg=SURFACE, fg=DANGER, hover_bg="#FBEAEA",
+                   font=F(14, "bold"), pady=14, highlightthickness=1, highlightbackground=BORDER,
+                   highlightcolor=BORDER).grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
     def prompt_password(self):
-        pwd_win = tk.Toplevel(self)
-        pwd_win.title("Enter Password")
-        pwd_win.geometry("350x150")
-        pwd_win.configure(bg=BG_COLOR)
-        pwd_win.transient(self.controller)
-        pwd_win.grab_set()
-        
-        tk.Label(pwd_win, text="Enter Password:", font=("Arial", 16, "bold"), bg=BG_COLOR, fg=TXT_COLOR).pack(pady=10)
-        pwd_entry = tk.Entry(pwd_win, show="*", font=("Arial", 16), justify="center")
-        pwd_entry.pack(pady=5)
-        pwd_entry.focus()
-        
+        win, body = make_dialog(self.controller, "Teacher access", "Teacher access",
+                                "Enter the password to open settings")
+
+        entry = styled_entry(body, show="\u2022", width=24)
+        entry.pack(fill="x", ipady=6)
+        error = tk.Label(body, text="", font=F(10), bg=SURFACE, fg=DANGER)
+        error.pack(anchor="w", pady=(6, 0))
+
         def check_pwd(event=None):
-            entered = pwd_entry.get()
-            if entered == self.controller.settings.get("password", "password"):
-                pwd_win.destroy()
+            if entry.get() == self.controller.settings.get("password", "password"):
+                win.destroy()
                 self.controller.show_frame("SettingsScreen")
             else:
-                pwd_win.destroy()
-                
-        pwd_entry.bind("<Return>", check_pwd)
+                error.config(text="That password doesn't match. Try again.")
+                entry.delete(0, tk.END)
+
+        btns = tk.Frame(body, bg=SURFACE)
+        btns.pack(fill="x", pady=(10, 0))
+        FlatButton(btns, "Unlock", check_pwd, bg=CHALK, fg="white").pack(side="right")
+        FlatButton(btns, "Cancel", win.destroy, bg=SOFT, fg=INK).pack(side="right", padx=(0, 8))
+
+        entry.bind("<Return>", check_pwd)
+        center_dialog(win, self.controller)
+        entry.focus_set()
 
 
 class GameScreen(tk.Frame):
+    ANSWER_HOVER = "#EEF3F6"
+
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, bg=PAPER)
         self.controller = controller
-        self.configure(bg=BG_COLOR)
         self.category = "+"
         self.timer_id = None
         self.calculated_score = 0
         self.is_flashing = False
-        
-        # Configure scaling
-        self.rowconfigure(0, weight=1)
-        self.rowconfigure(1, weight=2)
-        self.rowconfigure(2, weight=2)
-        self.rowconfigure(3, weight=1)
+        self.time_remaining = 0
+        self.total_time = 1
+        self._is_root = False
+        self._measure_font = tkfont.Font(family=FONT_FAMILY, size=60, weight="bold")
+
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        self.columnconfigure(2, weight=1)
-        
-        # Return Button (Top Right)
-        return_btn = tk.Button(self, text="\u21B5", font=("Arial", 36, "bold"), relief="raised",
-                               bg=BTN_BG, fg=TXT_COLOR, command=self.exit_game)
-        return_btn.grid(row=0, column=2, sticky="ne", padx=20, pady=20)
-        
-        # Active Game Widgets
-        self.problem_label = tk.Label(self, text="", font=("Arial", 64, "bold"), bg=BG_COLOR, fg=TXT_COLOR)
-        self.problem_label.grid(row=1, column=0, columnspan=3)
-        
-        self.buttons_frame = tk.Frame(self, bg=BG_COLOR)
-        self.buttons_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=20)
+        self.rowconfigure(1, weight=1)
+
+        self.header = Header(self, "Addition", "")
+        self.header.grid(row=0, column=0, sticky="ew")
+        self.header.add_action("Main menu", self.exit_game)
+
+        # ---------------- Active game view ----------------
+        self.play_frame = tk.Frame(self, bg=PAPER)
+        self.play_frame.columnconfigure(0, weight=1)
+        self.play_frame.rowconfigure(1, weight=3)
+        self.play_frame.rowconfigure(2, weight=2)
+
+        # Timer row: label, progress bar, countdown
+        timer_row = tk.Frame(self.play_frame, bg=PAPER)
+        timer_row.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        timer_row.columnconfigure(1, weight=1)
+        tk.Label(timer_row, text="Time left", font=F(11, "bold"), bg=PAPER, fg=MUTED).grid(
+            row=0, column=0, sticky="w", padx=(0, 12))
+        self.progress = tk.Canvas(timer_row, height=10, bg=SOFT, highlightthickness=0, bd=0)
+        self.progress.grid(row=0, column=1, sticky="ew")
+        self.progress.bind("<Configure>", lambda e: self.draw_progress())
+        self.time_label = tk.Label(timer_row, text="", font=F(20, "bold"), bg=PAPER, fg=CHALK,
+                                   width=5, anchor="e")
+        self.time_label.grid(row=0, column=2, sticky="e", padx=(12, 0))
+
+        # Problem card
+        self.problem_card = card(self.play_frame)
+        self.problem_card.grid(row=1, column=0, sticky="nsew")
+        self.problem_accent = tk.Frame(self.problem_card, bg=PENCIL, height=6)
+        self.problem_accent.pack(fill="x")
+        problem_inner = tk.Frame(self.problem_card, bg=SURFACE)
+        problem_inner.pack(expand=True)
+        self.problem_label = tk.Label(problem_inner, text="", font=F(60, "bold"), bg=SURFACE, fg=INK)
+        self.problem_label.pack()
+        self.instruction_label = tk.Label(problem_inner, text="", font=F(12), bg=SURFACE, fg=MUTED)
+        self.instruction_label.pack(pady=(0, 6))
+
+        # Answer buttons
+        self.buttons_frame = tk.Frame(self.play_frame, bg=PAPER)
+        self.buttons_frame.grid(row=2, column=0, sticky="nsew", pady=(16, 0))
         self.buttons_frame.rowconfigure(0, weight=1)
-        self.buttons_frame.columnconfigure(0, weight=1)
-        self.buttons_frame.columnconfigure(1, weight=1)
-        
-        self.left_btn = tk.Button(self.buttons_frame, text="", font=("Arial", 48, "bold"), bg="white", fg=TXT_COLOR, command=lambda: self.check_answer("left"))
-        self.left_btn.grid(row=0, column=0, sticky="nsew", padx=10)
-        self.right_btn = tk.Button(self.buttons_frame, text="", font=("Arial", 48, "bold"), bg="white", fg=TXT_COLOR, command=lambda: self.check_answer("right"))
-        self.right_btn.grid(row=0, column=1, sticky="nsew", padx=10)
-        
-        self.time_label = tk.Label(self, text="", font=("Arial", 32, "bold"), bg=BG_COLOR, fg="#FF0000")
-        self.time_label.grid(row=3, column=0, columnspan=3)
-        
-        # Post-Game Widgets (Hidden initially)
-        self.score_title = tk.Label(self, text="Score", font=("Arial", 36, "bold"), bg=BG_COLOR, fg=TXT_COLOR)
-        self.score_label = tk.Label(self, text="", font=("Arial", 64, "bold"), bg=BG_COLOR, fg="#006400") # Dark Green
-        self.answered_label = tk.Label(self, text="", font=("Arial", 28, "bold"), bg=BG_COLOR, fg=TXT_COLOR)
-        self.name_prompt = tk.Label(self, text="Enter name:", font=("Arial", 24, "bold"), bg=BG_COLOR, fg=TXT_COLOR)
-        self.name_entry = tk.Entry(self, font=("Arial", 24, "bold"), justify="center")
+        self.buttons_frame.columnconfigure(0, weight=1, uniform="ans")
+        self.buttons_frame.columnconfigure(1, weight=1, uniform="ans")
+
+        answer_style = dict(bg=SURFACE, fg=INK, hover_bg=self.ANSWER_HOVER, font=F(40, "bold"),
+                            highlightthickness=2, highlightbackground=BORDER, highlightcolor=BORDER)
+        self.left_btn = FlatButton(self.buttons_frame, "", lambda: self.check_answer("left"), **answer_style)
+        self.left_btn.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.right_btn = FlatButton(self.buttons_frame, "", lambda: self.check_answer("right"), **answer_style)
+        self.right_btn.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        tk.Label(self.play_frame, text="Keyboard shortcuts:  \u2190 or Ctrl picks the left answer,  \u2192 picks the right",
+                 font=F(10), bg=PAPER, fg=MUTED).grid(row=3, column=0, pady=(12, 0))
+
+        # ---------------- Results view (hidden initially) ----------------
+        self.results_frame = tk.Frame(self, bg=PAPER)
+        self.results_frame.columnconfigure(0, weight=1)
+        self.results_frame.rowconfigure(0, weight=1)
+
+        results_card = card(self.results_frame)
+        results_card.grid(row=0, column=0)
+        self.results_accent = tk.Frame(results_card, bg=PENCIL, height=6)
+        self.results_accent.pack(fill="x")
+
+        inner = tk.Frame(results_card, bg=SURFACE)
+        inner.pack(padx=56, pady=(20, 28))
+        tk.Label(inner, text="Time's up! Your final score", font=F(16, "bold"), bg=SURFACE, fg=INK).pack()
+        self.score_label = tk.Label(inner, text="", font=F(56, "bold"), bg=SURFACE, fg=SUCCESS)
+        self.score_label.pack()
+
+        stats = tk.Frame(inner, bg=SURFACE)
+        stats.pack(pady=(0, 16))
+        self.correct_stat = self._stat(stats, "Correct", SUCCESS, 0)
+        self.wrong_stat = self._stat(stats, "Incorrect", DANGER, 1)
+        self.answered_label = self._stat(stats, "Problems answered", CHALK, 2)
+
+        tk.Frame(inner, bg=BORDER, height=1).pack(fill="x", pady=(0, 14))
+        tk.Label(inner, text="Type your name for the scoreboard", font=F(12, "bold"),
+                 bg=SURFACE, fg=INK).pack()
+        self.name_entry = styled_entry(inner, font=F(16), width=24)
+        self.name_entry.pack(pady=(8, 14), ipady=6)
         self.name_entry.bind("<Return>", self.save_score)
+        FlatButton(inner, "Save score", self.save_score, bg=CHALK, fg="white",
+                   font=F(13, "bold"), pady=12).pack(fill="x")
+
+    def _stat(self, parent, label, color, col):
+        box = tk.Frame(parent, bg=SURFACE)
+        box.grid(row=0, column=col, padx=18)
+        value = tk.Label(box, text="0", font=F(20, "bold"), bg=SURFACE, fg=color)
+        value.pack()
+        tk.Label(box, text=label, font=F(10), bg=SURFACE, fg=MUTED).pack()
+        return value
+
+    def _reset_answer_colors(self, btn):
+        btn.set_colors(SURFACE, INK, self.ANSWER_HOVER)
+
+    @property
+    def neg(self):
+        return bool(self.controller.settings.get("allow_negatives", False))
 
     def on_show(self, category="+"):
         self.category = category
+        name, color, _, instruction = CATEGORY_INFO[category]
+        self.header.set(title=name, subtitle="Pick the correct answer as fast as you can.", accent=color)
+        self.problem_accent.config(bg=color)
+        self.results_accent.config(bg=color)
+        self.instruction_label.config(text=instruction)
+
         self.success_count = 0
         self.failure_count = 0
         self.time_remaining = self.controller.settings["game_time"]
+        self.total_time = max(1, self.time_remaining)
         self.is_flashing = False
-        
-        # Hide end-game widgets
-        self.score_title.grid_forget()
-        self.score_label.grid_forget()
-        self.answered_label.grid_forget()
-        self.name_prompt.grid_forget()
-        self.name_entry.grid_forget()
-        
-        # Show active game widgets
-        self.problem_label.grid(row=1, column=0, columnspan=3)
-        self.buttons_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", padx=20)
-        self.time_label.grid(row=3, column=0, columnspan=3)
-        
+
+        if self.timer_id:
+            self.after_cancel(self.timer_id)
+            self.timer_id = None
+
+        # Swap to the active game view
+        self.results_frame.grid_forget()
+        self.play_frame.grid(row=1, column=0, sticky="nsew", padx=48, pady=24)
+        self.update_idletasks()  # so the problem card knows its width for font sizing
+
         # Reset colors just in case
-        self.left_btn.config(bg="white")
-        self.right_btn.config(bg="white")
-        
+        self._reset_answer_colors(self.left_btn)
+        self._reset_answer_colors(self.right_btn)
+
         # Bind keys
         self.controller.bind("<Left>", lambda e: self.check_answer("left"))
         self.controller.bind("<Control_L>", lambda e: self.check_answer("left"))
         self.controller.bind("<Control_R>", lambda e: self.check_answer("left"))
         self.controller.bind("<Right>", lambda e: self.check_answer("right"))
-        
+
         self.generate_problem()
         self.update_timer()
-        
+
     def exit_game(self):
         if self.timer_id:
             self.after_cancel(self.timer_id)
@@ -244,41 +593,217 @@ class GameScreen(tk.Frame):
         self.controller.unbind("<Right>")
         self.controller.show_frame("MainMenu")
 
+    # ------------------------------------------------------------------
+    # Problem generation
+    # ------------------------------------------------------------------
+    def rand(self, lo, hi, signed=True):
+        """Random integer in [lo, hi]; made negative half the time when negatives are on."""
+        v = random.randint(lo, hi)
+        if signed and self.neg and v != 0 and random.random() < 0.5:
+            v = -v
+        return v
+
+    def number_range(self):
+        s = self.controller.settings
+        lo, hi = s["min_val"], s["max_val"]
+        return min(lo, hi), max(lo, hi)
+
+    def gen_addition(self, lo, hi):
+        a, b = self.rand(lo, hi), self.rand(lo, hi)
+        mistakes = [a - b] if self.neg else []
+        return f"{fmt_num(a)} + {fmt_term(b)} =", a + b, mistakes
+
+    def gen_subtraction(self, lo, hi):
+        a, b = self.rand(lo, hi), self.rand(lo, hi)
+        if not self.neg and a < b:
+            a, b = b, a
+        mistakes = [a + b] if self.neg else []  # e.g. treating 5 − (−3) as 5 − 3
+        return f"{fmt_num(a)} {MINUS} {fmt_term(b)} =", a - b, mistakes
+
+    def gen_multiplication(self, lo, hi):
+        a, b = self.rand(lo, hi), self.rand(lo, hi)
+        return f"{fmt_num(a)} × {fmt_term(b)} =", a * b, [a + b]
+
+    def gen_division(self, lo, hi):
+        ans = self.rand(lo, hi)
+        b = self.rand(max(1, lo), max(1, hi))
+        a = ans * b
+        return f"{fmt_num(a)} ÷ {fmt_term(b)} =", ans, []
+
+    def gen_exponents(self, lo, hi):
+        sq_hi = max(1, min(hi, 15))
+        sq_lo = min(lo, sq_hi)
+        kind = random.choice(["square", "square", "cube", "root", "root"])
+        if kind == "square":
+            n = self.rand(sq_lo, sq_hi)
+            return f"{fmt_term(n)}² =", n * n, [2 * n, n + 2]
+        if kind == "cube":
+            cu_hi = max(1, min(hi, 6))
+            n = self.rand(min(lo, cu_hi), cu_hi)
+            return f"{fmt_term(n)}³ =", n ** 3, [3 * n, n * n]
+        n = random.randint(sq_lo, sq_hi)
+        sq = n * n
+        self._is_root = True  # don't offer −n: it squares to the same number
+        mistakes = [sq // 2] if sq % 2 == 0 else []
+        return f"\u221A{sq} =", n, mistakes
+
+    def gen_order_of_ops(self, lo, hi):
+        f_hi = max(1, min(hi, 12))   # keep multiplication facts mental-math sized
+        f_lo = min(lo, f_hi)
+        form = random.randint(1, 5)
+        if form == 1:    # a + b × c
+            a, b, c = self.rand(lo, hi), self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
+            return (f"{fmt_num(a)} + {fmt_term(b)} × {fmt_term(c)} =", a + b * c, [(a + b) * c])
+        if form == 2:    # a − b × c
+            b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
+            a = self.rand(lo, hi) if self.neg else b * c + random.randint(lo, hi)
+            return (f"{fmt_num(a)} {MINUS} {fmt_term(b)} × {fmt_term(c)} =", a - b * c, [(a - b) * c])
+        if form == 3:    # a × b + c
+            a, b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi), self.rand(lo, hi)
+            return (f"{fmt_num(a)} × {fmt_term(b)} + {fmt_term(c)} =", a * b + c, [a * (b + c)])
+        if form == 4:    # (a + b) × c
+            a, b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
+            return (f"({fmt_num(a)} + {fmt_term(b)}) × {fmt_term(c)} =", (a + b) * c, [a + b * c])
+        # form 5: a − b + c  (left to right, not "add first")
+        a, b, c = self.rand(lo, hi), self.rand(lo, hi), self.rand(lo, hi)
+        if not self.neg and a < b:
+            a, b = b, a
+        return (f"{fmt_num(a)} {MINUS} {fmt_term(b)} + {fmt_term(c)} =", a - b + c, [a - (b + c)])
+
+    def gen_solve_for_x(self, lo, hi):
+        coef_hi = max(2, min(hi, 12))
+
+        def coef():
+            v = random.randint(2, coef_hi)
+            return -v if self.neg and random.random() < 0.5 else v
+
+        def constant(limit):
+            k = random.randint(max(1, lo), max(1, hi))
+            # Subtracting is only allowed without negatives if the result stays >= 0
+            if (self.neg or k <= limit) and random.random() < 0.5:
+                k = -k
+            return k
+
+        forms = ["add", "mul", "div"]
+        if self.controller.settings.get("two_step", True):
+            forms += ["two", "two"]
+        form = random.choice(forms)
+        x = self.rand(lo, hi)
+
+        if form == "add":        # x + k = c
+            k = constant(x)
+            c = x + k
+            return f"{fmt_linear(1, k)} = {fmt_num(c)}", x, [c + k]
+        if form == "mul":        # ax = c
+            a = coef()
+            c = a * x
+            return f"{fmt_linear(a, 0)} = {fmt_num(c)}", x, [c - a, c * a]
+        if form == "div":        # x ÷ a = q
+            a = coef()
+            q = x
+            x = a * q
+            return f"x ÷ {fmt_term(a)} = {fmt_num(q)}", x, [q, q + a]
+        # two-step: ax + k = c
+        a = coef()
+        k = constant(a * x)
+        c = a * x + k
+        mistakes = [c - k]  # forgot to divide
+        if (c + k) % a == 0:
+            mistakes.append((c + k) // a)  # used the wrong inverse operation
+        if c % a == 0:
+            mistakes.append(c // a - k)  # undid steps in the wrong order
+        return f"{fmt_linear(a, k)} = {fmt_num(c)}", x, mistakes
+
+    def gen_fractions(self, lo, hi):
+        d1 = random.randint(2, 12)
+        unlike = self.controller.settings.get("unlike_denominators", True)
+        d2 = random.randint(2, 12) if unlike and random.random() < 0.7 else d1
+        n1, n2 = random.randint(1, d1 - 1), random.randint(1, d2 - 1)
+        if self.neg and random.random() < 0.5:
+            if random.random() < 0.5:
+                n1 = -n1
+            else:
+                n2 = -n2
+        op = random.choice(["+", MINUS, "×"])
+        f1, f2 = Fraction(n1, d1), Fraction(n2, d2)
+        if op == MINUS and not self.neg and f1 < f2:
+            f1, f2, n1, n2, d1, d2 = f2, f1, n2, n1, d2, d1
+
+        if op == "+":
+            correct = f1 + f2
+            mistakes = [Fraction(n1 + n2, d1 + d2)]   # added tops and bottoms
+        elif op == MINUS:
+            correct = f1 - f2
+            mistakes = [Fraction(n1 - n2, d1 + d2)]
+        else:
+            correct = f1 * f2
+            mistakes = [Fraction(n1 * d2, d1 * n2)] if n2 != 0 else []  # divided instead
+
+        left = fmt_raw_fraction(n1, d1)
+        right = fmt_raw_fraction(n2, d2)
+        if n2 < 0:
+            right = f"({right})"
+        return f"{left} {op} {right} =", correct, mistakes
+
+    GENERATORS = {
+        "+": "gen_addition", "–": "gen_subtraction", "×": "gen_multiplication",
+        "÷": "gen_division", "x²": "gen_exponents", "( )": "gen_order_of_ops",
+        "x": "gen_solve_for_x", "½": "gen_fractions",
+    }
+
+    def pick_wrong(self, correct, mistakes):
+        """Choose a wrong answer, favoring the mistakes students actually make."""
+        candidates = []
+        for m in mistakes:
+            if m is None or m == correct or m in candidates:
+                continue
+            if not self.neg and m < 0:
+                continue
+            candidates.append(m)
+
+        # With negatives on, the classic error is getting the sign wrong
+        if self.neg and correct != 0 and not self._is_root and random.random() < 0.35:
+            return -correct
+        if candidates and random.random() < 0.7:
+            return random.choice(candidates)
+
+        if isinstance(correct, Fraction):
+            den = correct.denominator if correct.denominator > 1 else random.randint(2, 6)
+            for _ in range(20):
+                w = correct + Fraction(random.choice([-3, -2, -1, 1, 2, 3]), den)
+                if self.neg or w >= 0:
+                    return w
+            return correct + Fraction(1, den)
+
+        deltas = [-12, -10, -8, -5, -3, -2, -1, 1, 2, 3, 5, 8, 10, 12]
+        for _ in range(20):
+            w = correct + random.choice(deltas)
+            if self.neg or w >= 0:
+                return w
+        return correct + 1
+
+    def fmt_answer(self, value):
+        return f"x = {fmt_num(value)}" if self.category == "x" else fmt_num(value)
+
+    def show_problem_text(self, text):
+        """Shrink the problem font for longer problems so it always fits the card."""
+        available = max(300, self.problem_card.winfo_width() - 60)
+        size = 60
+        self._measure_font.configure(family=FONT_FAMILY, size=size)
+        while size > 28 and self._measure_font.measure(text) > available:
+            size -= 4
+            self._measure_font.configure(size=size)
+        self.problem_label.config(text=text, font=F(size, "bold"))
+
     def generate_problem(self):
-        min_v = self.controller.settings["min_val"]
-        max_v = self.controller.settings["max_val"]
-        
-        if self.category == "+":
-            a, b = random.randint(min_v, max_v), random.randint(min_v, max_v)
-            self.correct_ans = a + b
-            prob_text = f"{a} + {b} ="
-        elif self.category == "–":
-            a, b = random.randint(min_v, max_v), random.randint(min_v, max_v)
-            if a < b:
-                a, b = b, a
-            self.correct_ans = a - b
-            prob_text = f"{a} – {b} ="
-        elif self.category == "×":
-            a, b = random.randint(min_v, max_v), random.randint(min_v, max_v)
-            self.correct_ans = a * b
-            prob_text = f"{a} × {b} ="
-        elif self.category == "÷":
-            divisor_min = max(1, min_v)
-            divisor_max = max(1, max_v) if max_v >= 1 else 1
-            
-            ans = random.randint(min_v, max_v)
-            b = random.randint(divisor_min, divisor_max)
-            a = ans * b
-            self.correct_ans = ans
-            prob_text = f"{a} ÷ {b} ="
-            
-        self.problem_label.config(text=prob_text)
-        
-        delta = random.choice([-12, -10, -8, -5, -3, -2, -1, 1, 2, 3, 5, 8, 10, 12])
-        wrong_ans = self.correct_ans + delta
-        if wrong_ans < 0:
-            wrong_ans = self.correct_ans + abs(delta)
-            
+        lo, hi = self.number_range()
+        self._is_root = False
+        generator = getattr(self, self.GENERATORS[self.category])
+        prob_text, self.correct_ans, mistakes = generator(lo, hi)
+        self.show_problem_text(prob_text)
+
+        wrong_ans = self.pick_wrong(self.correct_ans, mistakes)
+
         if random.choice([True, False]):
             self.left_val = self.correct_ans
             self.right_val = wrong_ans
@@ -287,45 +812,61 @@ class GameScreen(tk.Frame):
             self.left_val = wrong_ans
             self.right_val = self.correct_ans
             self.correct_side = "right"
-            
-        self.left_btn.config(text=str(self.left_val))
-        self.right_btn.config(text=str(self.right_val))
 
+        self.left_btn.config(text=self.fmt_answer(self.left_val))
+        self.right_btn.config(text=self.fmt_answer(self.right_val))
+
+    # ------------------------------------------------------------------
+    # Answering and timing
+    # ------------------------------------------------------------------
     def check_answer(self, side):
         # Prevent input if time is up or if currently flashing
         if self.time_remaining <= 0 or self.is_flashing:
             return
-            
+
         self.is_flashing = True
-            
+
         if side == self.correct_side:
             self.success_count += 1
-            flash_color = "#32CD32" # Lime Green
+            flash_color = SUCCESS
         else:
             self.failure_count += 1
-            flash_color = "#FF0000" # Red
-            
-        # Flash the background of the selected button
+            flash_color = DANGER
+
+        # Flash the selected answer
         target_btn = self.left_btn if side == "left" else self.right_btn
-        target_btn.config(bg=flash_color)
-        
+        target_btn.set_colors(flash_color, "white", flash_color)
+
         # Wait 150ms, revert the color, and move to the next problem
         self.after(150, lambda: self.reset_flash_and_continue(target_btn))
 
     def reset_flash_and_continue(self, target_btn):
-        target_btn.config(bg="white")
+        self._reset_answer_colors(target_btn)
         self.is_flashing = False
-        
+
         # Only generate the next problem if the game hasn't ended during the flash
         if self.time_remaining > 0:
             self.generate_problem()
 
+    def draw_progress(self):
+        c = self.progress
+        c.delete("all")
+        w, h = c.winfo_width(), c.winfo_height()
+        frac = max(0.0, min(1.0, self.time_remaining / self.total_time))
+        color = DANGER if self.time_remaining <= 10 else CATEGORY_INFO[self.category][1]
+        if frac > 0:
+            c.create_rectangle(0, 0, w * frac, h, fill=color, outline="")
+
     def update_timer(self):
         if self.time_remaining > 0:
-            self.time_label.config(text=str(self.time_remaining))
+            mins, secs = divmod(self.time_remaining, 60)
+            low = self.time_remaining <= 10
+            self.time_label.config(text=f"{mins}:{secs:02d}", fg=DANGER if low else CHALK)
+            self.draw_progress()
             self.time_remaining -= 1
             self.timer_id = self.after(1000, self.update_timer)
         else:
+            self.timer_id = None
             self.end_game()
 
     def end_game(self):
@@ -333,173 +874,223 @@ class GameScreen(tk.Frame):
         self.controller.unbind("<Control_L>")
         self.controller.unbind("<Control_R>")
         self.controller.unbind("<Right>")
-        
-        self.problem_label.grid_forget()
-        self.buttons_frame.grid_forget()
-        self.time_label.grid_forget()
-        
+
         self.calculated_score = self.success_count - self.failure_count
         total_answered = self.success_count + self.failure_count
-        
-        self.score_title.grid(row=0, column=0, columnspan=3, pady=(20, 0))
-        
-        self.score_label.config(text=str(self.calculated_score))
-        self.score_label.grid(row=1, column=0, columnspan=3)
-        
-        self.answered_label.config(text=f"Problems Answered: {total_answered}")
-        self.answered_label.grid(row=2, column=0, columnspan=3, pady=10)
-        
-        self.name_prompt.grid(row=3, column=0, columnspan=3)
-        self.name_entry.grid(row=4, column=0, columnspan=3, pady=(0, 40))
+
+        self.score_label.config(text=fmt_num(self.calculated_score),
+                                fg=SUCCESS if self.calculated_score >= 0 else DANGER)
+        self.correct_stat.config(text=str(self.success_count))
+        self.wrong_stat.config(text=str(self.failure_count))
+        self.answered_label.config(text=str(total_answered))
+
+        self.header.set(subtitle="Nice work. Save your score or head back to the menu.")
+        self.play_frame.grid_forget()
+        self.results_frame.grid(row=1, column=0, sticky="nsew", padx=48, pady=24)
+
         self.name_entry.delete(0, tk.END)
-        self.name_entry.focus()
+        self.name_entry.focus_set()
 
     def save_score(self, event=None):
         name = self.name_entry.get().strip()
         if not name:
             name = "Anonymous"
-            
+
         filename = SCORE_FILES[self.category]
-        scores = []
-        if os.path.exists(filename):
-            try:
-                with open(filename, "r") as f:
-                    scores = json.load(f)
-            except Exception:
-                pass
-                
+        scores = load_scores(self.category)
+
         scores.append({"name": name, "score": self.calculated_score})
         scores.sort(key=lambda x: x["score"], reverse=True)
-        
+
         with open(filename, "w") as f:
             json.dump(scores, f)
-            
+
         self.exit_game()
 
 
 class ScoreboardScreen(tk.Frame):
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, bg=PAPER)
         self.controller = controller
-        self.configure(bg=BG_COLOR)
-        
-        self.rowconfigure(0, weight=1)
-        self.rowconfigure(1, weight=5)
+
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        
-        # Return Button (Top Right)
-        return_btn = tk.Button(self, text="\u21B5", font=("Arial", 36, "bold"), relief="raised",
-                               bg=BTN_BG, fg=TXT_COLOR, command=lambda: controller.show_frame("MainMenu"))
-        return_btn.grid(row=0, column=1, sticky="ne", padx=20, pady=20)
-        
-        tk.Label(self, text="Top 5 Scores", font=("Arial", 36, "bold"), bg=BG_COLOR, fg=TXT_COLOR).grid(row=0, column=0, columnspan=2, pady=20)
-        
-        self.scores_frame = tk.Frame(self, bg=BG_COLOR)
-        self.scores_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=40, pady=10)
-        
+        self.rowconfigure(1, weight=1)
+
+        header = Header(self, "Scoreboards", "Top five scores for each drill")
+        header.grid(row=0, column=0, sticky="ew")
+        header.add_action("Main menu", lambda: controller.show_frame("MainMenu"))
+
+        self.scores_frame = tk.Frame(self, bg=PAPER)
+        self.scores_frame.grid(row=1, column=0, sticky="nsew", padx=26, pady=20)
         for i in range(4):
-            self.scores_frame.columnconfigure(i, weight=1)
+            self.scores_frame.columnconfigure(i, weight=1, uniform="board")
 
     def on_show(self):
         # Clear existing score lists
         for widget in self.scores_frame.winfo_children():
             widget.destroy()
-            
-        categories = [("+", "Addition"), ("–", "Subtraction"), 
-                      ("×", "Multiplication"), ("÷", "Division")]
-                      
-        for col, (cat_sym, cat_name) in enumerate(categories):
-            tk.Label(self.scores_frame, text=cat_name, font=("Arial", 18, "bold"), bg=BG_COLOR, fg="#FF0000").grid(row=0, column=col, pady=10)
-            
-            filename = SCORE_FILES[cat_sym]
-            scores = []
-            if os.path.exists(filename):
-                try:
-                    with open(filename, "r") as f:
-                        scores = json.load(f)
-                except Exception:
-                    pass
-            
+
+        for idx, key in enumerate(CATEGORY_ORDER):
+            name, color, symbol, _ = CATEGORY_INFO[key]
+            scores = load_scores(key)
+
+            board = card(self.scores_frame)
+            board.grid(row=idx // 4, column=idx % 4, sticky="new", padx=6, pady=6)
+
+            top = tk.Frame(board, bg=color)
+            top.pack(fill="x")
+            tk.Label(top, text=name, font=F(10, "bold"), bg=color, fg="white").pack(side="left", padx=10, pady=8)
+
+            rows = tk.Frame(board, bg=SURFACE)
+            rows.pack(fill="both", expand=True, padx=8, pady=8)
+
             for i in range(5):
+                row_bg = FIELD if i % 2 == 0 else SURFACE
+                row = tk.Frame(rows, bg=row_bg)
+                row.pack(fill="x", pady=1)
+
+                rank_color = PENCIL if i == 0 and i < len(scores) else MUTED
+                tk.Label(row, text=str(i + 1), font=F(11, "bold"), bg=row_bg, fg=rank_color,
+                         width=2).pack(side="left", padx=(4, 2), pady=4)
+
                 if i < len(scores):
-                    text = f"{scores[i]['name']}: {scores[i]['score']}"
+                    player = str(scores[i]["name"])
+                    if len(player) > 12:
+                        player = player[:11] + "\u2026"
+                    score_text = fmt_num(scores[i]["score"])
+                    name_color = INK
                 else:
-                    text = "---"
-                tk.Label(self.scores_frame, text=text, font=("Arial", 16, "bold"), bg=BG_COLOR, fg=TXT_COLOR).grid(row=i+1, column=col, pady=5)
+                    player, score_text, name_color = "No score yet", "", MUTED
+
+                tk.Label(row, text=score_text, font=F(11, "bold"), bg=row_bg, fg=INK).pack(side="right", padx=(4, 8))
+                tk.Label(row, text=player, font=F(11), bg=row_bg, fg=name_color, anchor="w").pack(
+                    side="left", fill="x", expand=True)
 
 
 class SettingsScreen(tk.Frame):
     def __init__(self, parent, controller):
-        super().__init__(parent)
+        super().__init__(parent, bg=PAPER)
         self.controller = controller
-        self.configure(bg=BG_COLOR)
-        
+        self._status_job = None
+
         self.columnconfigure(0, weight=1)
-        self.columnconfigure(1, weight=1)
-        for i in range(6):
-            self.rowconfigure(i, weight=1)
-            
-        # Left-Side Action Buttons
-        reset_btn = tk.Button(self, text="Reset to Default Values", font=("Arial", 14, "bold"), 
-                              bg=BTN_BG, fg=TXT_COLOR, command=self.reset_to_default)
-        reset_btn.place(x=15, y=15)
-        
-        reset_score_btn = tk.Button(self, text="Reset Scoreboard", font=("Arial", 14, "bold"), 
-                                    bg=BTN_ADD, fg="white", command=self.reset_scoreboard)
-        reset_score_btn.place(x=15, y=65)
-        
-        change_pwd_btn = tk.Button(self, text="Change Password", font=("Arial", 14, "bold"), 
-                                   bg=BTN_MUL, fg="white", command=self.change_password)
-        change_pwd_btn.place(x=15, y=115)
-        
-        tk.Label(self, text="Settings", font=("Arial", 36, "bold"), bg=BG_COLOR, fg=TXT_COLOR).grid(row=0, column=0, columnspan=2, pady=20)
-        
-        font_setup = ("Arial", 18, "bold")
-        
-        tk.Label(self, text="Minimum Problem Component Value:", font=font_setup, bg=BG_COLOR, fg=TXT_COLOR).grid(row=1, column=0, sticky="e", padx=10)
-        self.min_spin = tk.Spinbox(self, from_=0, to=100, font=font_setup, width=5)
-        self.min_spin.grid(row=1, column=1, sticky="w", padx=10)
-        
-        tk.Label(self, text="Maximum Problem Component Value:", font=font_setup, bg=BG_COLOR, fg=TXT_COLOR).grid(row=2, column=0, sticky="e", padx=10)
-        self.max_spin = tk.Spinbox(self, from_=0, to=100, font=font_setup, width=5)
-        self.max_spin.grid(row=2, column=1, sticky="w", padx=10)
-        
-        tk.Label(self, text="Game Time:", font=font_setup, bg=BG_COLOR, fg=TXT_COLOR).grid(row=3, column=0, sticky="e", padx=10)
-        self.time_spin = tk.Spinbox(self, from_=0, to=180, font=font_setup, width=5)
-        self.time_spin.grid(row=3, column=1, sticky="w", padx=10)
-        
-        btn_frame = tk.Frame(self, bg=BG_COLOR)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=30)
-        tk.Button(btn_frame, text="Save", font=font_setup, bg="#32CD32", fg="white", 
-                  command=self.save_and_return).pack(side=tk.LEFT, padx=20)
-        tk.Button(btn_frame, text="Return to Main Menu without Saving", font=font_setup, bg="#FF6347", fg="white",
-                  command=lambda: controller.show_frame("MainMenu")).pack(side=tk.LEFT, padx=20)
+        self.rowconfigure(1, weight=1)
+
+        header = Header(self, "Teacher settings", "Adjust difficulty, timing and pre-algebra options for every drill")
+        header.grid(row=0, column=0, sticky="ew")
+
+        body = tk.Frame(self, bg=PAPER)
+        body.grid(row=1, column=0, sticky="nsew", padx=40, pady=16)
+        body.columnconfigure(0, weight=1, uniform="settings")
+        body.columnconfigure(1, weight=1, uniform="settings")
+
+        # Number range card
+        range_card = card(body)
+        range_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        ri = tk.Frame(range_card, bg=SURFACE)
+        ri.pack(fill="both", expand=True, padx=24, pady=18)
+        ri.columnconfigure(0, weight=1)
+        tk.Label(ri, text="Numbers and time", font=F(15, "bold"), bg=SURFACE, fg=INK).grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        tk.Label(ri, text="With negative numbers on, these set how big each number is, ignoring its sign.",
+                 font=F(10), bg=SURFACE, fg=MUTED, wraplength=290, justify="left").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.min_spin = self._spin_field(ri, 2, "Smallest number", "Lowest value used in problems", 0, 100)
+        self.max_spin = self._spin_field(ri, 3, "Largest number", "Highest value used in problems", 0, 100)
+        self.time_spin = self._spin_field(ri, 4, "Game time (seconds)", "How long each drill lasts", 0, 180)
+
+        # Pre-algebra options card
+        opt_card = card(body)
+        opt_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        oi = tk.Frame(opt_card, bg=SURFACE)
+        oi.pack(fill="both", expand=True, padx=24, pady=18)
+        oi.columnconfigure(0, weight=1)
+        tk.Label(oi, text="Pre-algebra options", font=F(15, "bold"), bg=SURFACE, fg=INK).grid(
+            row=0, column=0, columnspan=2, sticky="w")
+        tk.Label(oi, text="Turn these on as students are ready for them.",
+                 font=F(10), bg=SURFACE, fg=MUTED, wraplength=290, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        self.neg_toggle = self._toggle_field(oi, 2, "Negative numbers",
+                                             f"Integers like {MINUS}7\u00a0+\u00a03 appear in every drill")
+        self.two_step_toggle = self._toggle_field(oi, 3, "Two-step equations",
+                                                  "Adds problems like 3x\u00a0+\u00a04\u00a0=\u00a019 to Solve for x")
+        self.unlike_toggle = self._toggle_field(oi, 4, "Unlike denominators",
+                                                "Adds problems like 1/3\u00a0+\u00a01/4 to Fractions")
+
+        # Classroom tools card
+        tools = card(body)
+        tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        ti = tk.Frame(tools, bg=SURFACE)
+        ti.pack(fill="x", padx=20, pady=10)
+        FlatButton(ti, "Restore defaults", self.reset_to_default, bg=SOFT, fg=INK).pack(side="left", padx=(0, 6))
+        FlatButton(ti, "Change password", self.change_password, bg=SOFT, fg=INK).pack(side="left", padx=4)
+        FlatButton(ti, "Clear scoreboards", self.reset_scoreboard, bg="#FBEAEA", fg=DANGER,
+                   hover_bg="#F5D5D5").pack(side="left", padx=4)
+
+        # Status line and save / cancel
+        actions = tk.Frame(body, bg=PAPER)
+        actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self.status = tk.Label(actions, text="", font=F(11), bg=PAPER, fg=SUCCESS)
+        self.status.pack(side="left")
+        FlatButton(actions, "Save changes", self.save_and_return, bg=SUCCESS, fg="white").pack(side="right")
+        FlatButton(actions, "Cancel", lambda: controller.show_frame("MainMenu"), bg=SOFT, fg=INK).pack(
+            side="right", padx=(0, 8))
+
+    def _field_label(self, parent, row, title, help_text):
+        tk.Frame(parent, bg=BORDER, height=1).grid(row=row, column=0, columnspan=2, sticky="new")
+        label_box = tk.Frame(parent, bg=SURFACE)
+        label_box.grid(row=row, column=0, sticky="w", pady=7)
+        tk.Label(label_box, text=title, font=F(12, "bold"), bg=SURFACE, fg=INK).pack(anchor="w")
+        tk.Label(label_box, text=help_text, font=F(10), bg=SURFACE, fg=MUTED,
+                 wraplength=200, justify="left").pack(anchor="w")
+
+    def _spin_field(self, parent, row, title, help_text, lo, hi):
+        self._field_label(parent, row, title, help_text)
+        spin = tk.Spinbox(parent, from_=lo, to=hi, font=F(14), width=5, justify="center",
+                          relief="flat", bg=FIELD, fg=INK, buttonbackground=SOFT,
+                          highlightthickness=2, highlightbackground=BORDER, highlightcolor=CHALK,
+                          insertbackground=INK)
+        spin.grid(row=row, column=1, sticky="e", pady=7, ipady=3)
+        return spin
+
+    def _toggle_field(self, parent, row, title, help_text):
+        self._field_label(parent, row, title, help_text)
+        toggle = Toggle(parent)
+        toggle.grid(row=row, column=1, sticky="e", pady=7)
+        return toggle
+
+    def show_status(self, message, color=SUCCESS):
+        if self._status_job:
+            self.after_cancel(self._status_job)
+        self.status.config(text=message, fg=color)
+        self._status_job = self.after(4000, lambda: self.status.config(text=""))
+
+    def _set_spin(self, spin, value):
+        spin.delete(0, tk.END)
+        spin.insert(0, value)
 
     def on_show(self):
-        settings = self.controller.settings
-        
-        self.min_spin.delete(0, tk.END)
-        self.min_spin.insert(0, settings["min_val"])
-        
-        self.max_spin.delete(0, tk.END)
-        self.max_spin.insert(0, settings["max_val"])
-        
-        self.time_spin.delete(0, tk.END)
-        self.time_spin.insert(0, settings["game_time"])
-        
+        s = self.controller.settings
+        self.status.config(text="")
+        self._set_spin(self.min_spin, s["min_val"])
+        self._set_spin(self.max_spin, s["max_val"])
+        self._set_spin(self.time_spin, s["game_time"])
+        self.neg_toggle.set(s.get("allow_negatives", False))
+        self.two_step_toggle.set(s.get("two_step", True))
+        self.unlike_toggle.set(s.get("unlike_denominators", True))
+
     def reset_to_default(self):
-        self.min_spin.delete(0, tk.END)
-        self.min_spin.insert(0, 0)
-        
-        self.max_spin.delete(0, tk.END)
-        self.max_spin.insert(0, 12)
-        
-        self.time_spin.delete(0, tk.END)
-        self.time_spin.insert(0, 90)
+        d = DEFAULT_SETTINGS
+        self._set_spin(self.min_spin, d["min_val"])
+        self._set_spin(self.max_spin, d["max_val"])
+        self._set_spin(self.time_spin, d["game_time"])
+        self.neg_toggle.set(d["allow_negatives"])
+        self.two_step_toggle.set(d["two_step"])
+        self.unlike_toggle.set(d["unlike_denominators"])
+        self.show_status("Defaults restored. Select Save changes to keep them.", CHALK)
 
     def reset_scoreboard(self):
-        confirm = messagebox.askyesno("Confirm Scoreboard Reset", "Are you sure you want to completely clear the scoreboard? This cannot be undone.")
+        confirm = messagebox.askyesno("Clear all scoreboards",
+                                      "This permanently deletes every saved score in all drills. Continue?")
         if confirm:
             for filename in SCORE_FILES.values():
                 try:
@@ -507,54 +1098,62 @@ class SettingsScreen(tk.Frame):
                         json.dump([], f)
                 except Exception:
                     pass
+            self.show_status("All scoreboards cleared.")
 
     def change_password(self):
-        pwd_win = tk.Toplevel(self)
-        pwd_win.title("Change Password")
-        pwd_win.geometry("400x250")
-        pwd_win.configure(bg=BG_COLOR)
-        pwd_win.transient(self.controller)
-        pwd_win.grab_set()
-        
-        tk.Label(pwd_win, text="Enter New Password in Both Boxes", font=("Arial", 14, "bold"), bg=BG_COLOR, fg=TXT_COLOR).pack(pady=15)
-        
-        box1 = tk.Entry(pwd_win, show="*", font=("Arial", 16), justify="center")
-        box1.pack(pady=5)
-        box2 = tk.Entry(pwd_win, show="*", font=("Arial", 16), justify="center")
-        box2.pack(pady=5)
-        
-        def confirm():
+        win, body = make_dialog(self.controller, "Change password", "Change password",
+                                "Type the new password in both boxes")
+
+        tk.Label(body, text="New password", font=F(11, "bold"), bg=SURFACE, fg=INK).pack(anchor="w")
+        box1 = styled_entry(body, show="\u2022", width=26)
+        box1.pack(fill="x", ipady=5, pady=(4, 10))
+        tk.Label(body, text="Confirm new password", font=F(11, "bold"), bg=SURFACE, fg=INK).pack(anchor="w")
+        box2 = styled_entry(body, show="\u2022", width=26)
+        box2.pack(fill="x", ipady=5, pady=(4, 0))
+
+        error = tk.Label(body, text="", font=F(10), bg=SURFACE, fg=DANGER)
+        error.pack(anchor="w", pady=(6, 0))
+
+        def confirm(event=None):
             val1 = box1.get()
             val2 = box2.get()
-            if val1 == val2 and val1 != "":
+            if val1 == "":
+                error.config(text="Enter a new password.")
+            elif val1 != val2:
+                error.config(text="The two passwords don't match.")
+            else:
                 self.controller.settings["password"] = val1
                 self.controller.save_settings()
-                pwd_win.destroy()
-            else:
-                pass
-                
-        def cancel():
-            pwd_win.destroy()
-            
-        btn_frame = tk.Frame(pwd_win, bg=BG_COLOR)
-        btn_frame.pack(pady=15)
-        tk.Button(btn_frame, text="Confirm", font=("Arial", 12, "bold"), bg=BTN_SUB, fg="white", command=confirm).pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="Cancel", font=("Arial", 12, "bold"), bg=BTN_ADD, fg="white", command=cancel).pack(side=tk.LEFT, padx=10)
+                win.destroy()
+                self.show_status("Password changed.")
+
+        btn_frame = tk.Frame(body, bg=SURFACE)
+        btn_frame.pack(fill="x", pady=(10, 0))
+        FlatButton(btn_frame, "Change password", confirm, bg=CHALK, fg="white").pack(side="right")
+        FlatButton(btn_frame, "Cancel", win.destroy, bg=SOFT, fg=INK).pack(side="right", padx=(0, 8))
+
+        box2.bind("<Return>", confirm)
+        center_dialog(win, self.controller)
+        box1.focus_set()
 
     def save_and_return(self):
+        s = self.controller.settings
         try:
-            self.controller.settings["min_val"] = int(self.min_spin.get())
-            self.controller.settings["max_val"] = int(self.max_spin.get())
-            self.controller.settings["game_time"] = int(self.time_spin.get())
-            
-            if self.controller.settings["min_val"] > self.controller.settings["max_val"]:
-                self.controller.settings["min_val"] = self.controller.settings["max_val"]
-                
-            self.controller.save_settings()
+            s["min_val"] = int(self.min_spin.get())
+            s["max_val"] = int(self.max_spin.get())
+            s["game_time"] = int(self.time_spin.get())
+            if s["min_val"] > s["max_val"]:
+                s["min_val"] = s["max_val"]
         except ValueError:
             pass
-        
+
+        s["allow_negatives"] = self.neg_toggle.value
+        s["two_step"] = self.two_step_toggle.value
+        s["unlike_denominators"] = self.unlike_toggle.value
+        self.controller.save_settings()
+
         self.controller.show_frame("MainMenu")
+
 
 if __name__ == "__main__":
     app = MathGameApp()
