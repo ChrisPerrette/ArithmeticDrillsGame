@@ -375,6 +375,7 @@ class MainMenu(tk.Frame):
         header = Header(self, "Arithmetic Drills",
                         "Timed math practice, from basic facts through pre-algebra. Pick a drill to start.")
         header.grid(row=0, column=0, sticky="ew")
+        header.add_action("?", self.show_help)
         header.add_action("\u2699  Settings", self.prompt_password)
 
         # 4x2 grid of drill tiles: arithmetic on top, pre-algebra below
@@ -403,6 +404,24 @@ class MainMenu(tk.Frame):
         FlatButton(footer, "Quit", controller.quit, bg=SURFACE, fg=DANGER, hover_bg="#FBEAEA",
                    font=F(14, "bold"), pady=14, highlightthickness=1, highlightbackground=BORDER,
                    highlightcolor=BORDER).grid(row=0, column=1, sticky="ew", padx=(8, 0))
+
+    def show_help(self):
+        win, body = make_dialog(self.controller, "How to Play", "How to Play")
+        
+        instructions = (
+            "1. Pick a math drill from the main menu.\n\n"
+            "2. Read the problem and choose the correct answer.\n\n"
+            "3. Click the answer with your mouse, or press the Left or Right arrow keys (you can also use the Control key instead of the Left arrow). \n\n"
+            "4. Answer as many as you can before the timer runs out!\n\n"
+            "Note: Wrong answers lower your score, so think carefully before you guess."
+        )
+        
+        lbl = tk.Label(body, text=instructions, font=F(12), bg=SURFACE, fg=INK, justify="left", wraplength=350)
+        lbl.pack(padx=10, pady=(0, 20))
+        
+        FlatButton(body, "OK", win.destroy, bg=CHALK, fg="white").pack()
+        
+        center_dialog(win, self.controller)
 
     def prompt_password(self):
         win, body = make_dialog(self.controller, "Teacher access", "Teacher access",
