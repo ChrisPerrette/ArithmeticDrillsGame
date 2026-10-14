@@ -6,8 +6,9 @@ import random
 import json
 import os
 
-# File paths for saving data (original four files unchanged, so existing scores carry over)
+# File paths for saving data
 SETTINGS_FILE = "settings.json"
+ALL_TIME_FILE = "High_Scores_AllTime.json"
 SCORE_FILES = {
     "+": "High_Scores_Add.json",
     "–": "High_Scores_Sub.json",
@@ -64,7 +65,6 @@ FONT_FAMILY = "Arial"
 
 
 def pick_font(root):
-    """Use the nicest sans-serif installed on this computer."""
     global FONT_FAMILY
     available = set(tkfont.families(root))
     for name in ("Segoe UI", "Avenir Next", "Helvetica Neue", "Noto Sans",
@@ -73,13 +73,10 @@ def pick_font(root):
             FONT_FAMILY = name
             return
 
-
 def F(size, weight="normal"):
     return (FONT_FAMILY, size, weight)
 
-
 def shade(hex_color, factor):
-    """Darken (negative factor) or lighten (positive factor) a hex color."""
     hex_color = hex_color.lstrip("#")
     r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
     if factor < 0:
@@ -87,7 +84,6 @@ def shade(hex_color, factor):
     else:
         r, g, b = (int(c + (255 - c) * factor) for c in (r, g, b))
     return f"#{r:02x}{g:02x}{b:02x}"
-
 
 def load_scores(category):
     filename = SCORE_FILES[category]
@@ -99,12 +95,39 @@ def load_scores(category):
             pass
     return []
 
+def load_all_time_scores():
+    if os.path.exists(ALL_TIME_FILE):
+        try:
+            with open(ALL_TIME_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def seed_all_time_scores():
+    if not os.path.exists(ALL_TIME_FILE):
+        seed_scores = []
+        for cat, file in SCORE_FILES.items():
+            if os.path.exists(file):
+                try:
+                    with open(file, "r") as f:
+                        cat_scores = json.load(f)
+                        for s in cat_scores:
+                            seed_scores.append({
+                                "name": s["name"], 
+                                "score": s["score"], 
+                                "category": cat
+                            })
+                except Exception:
+                    pass
+        seed_scores.sort(key=lambda x: x["score"], reverse=True)
+        with open(ALL_TIME_FILE, "w") as f:
+            json.dump(seed_scores[:5], f)
 
 # ---------------------------------------------------------------------------
 # Number formatting
 # ---------------------------------------------------------------------------
 def fmt_num(v):
-    """Format an int or Fraction with a real minus sign; fractions in lowest terms."""
     if isinstance(v, Fraction):
         if v.denominator == 1:
             v = v.numerator
@@ -113,21 +136,15 @@ def fmt_num(v):
             return MINUS + text if v < 0 else text
     return f"{MINUS}{abs(v)}" if v < 0 else str(v)
 
-
 def fmt_term(v):
-    """Wrap negative numbers in parentheses when they follow an operator, e.g. 5 + (−3)."""
     text = fmt_num(v)
     return f"({text})" if v < 0 else text
 
-
 def fmt_raw_fraction(signed_num, den):
-    """Show a fraction exactly as generated (not simplified), e.g. 2/4."""
     text = f"{abs(signed_num)}/{den}"
     return MINUS + text if signed_num < 0 else text
 
-
 def fmt_linear(a, k):
-    """Format ax + k, e.g. 3x − 4, −x + 2, x."""
     if a == 1:
         text = "x"
     elif a == -1:
@@ -140,17 +157,134 @@ def fmt_linear(a, k):
         text += f" {MINUS} {abs(k)}"
     return text
 
+# ---------------------------------------------------------------------------
+# Advanced Math Rendering 
+# ---------------------------------------------------------------------------
+def render_math(container, text, size, bg_color, fg_color, bind_func=None):
+    """Parses a string and renders fractions vertically, aligning whole numbers to the center."""
+    for w in container.winfo_children():
+        w.destroy()
+        
+    def apply(w):
+        if bind_func:
+            bind_func(w)
+
+    # Central container to keep the whole equation together
+    inner = tk.Frame(container, bg=bg_color)
+    inner.pack(expand=True)
+    apply(inner)
+
+    tokens = text.split(" ")
+    for token in tokens:
+        if "/" in token and "÷" not in token:
+            prefix, suffix = "", ""
+            if token.startswith("("):
+                prefix = "("
+                token = token[1:]
+            if token.endswith(")"):
+                suffix = ")"
+                token = token[:-1]
+            
+            num_str, den_str = token.split("/")
+            
+            term_frame = tk.Frame(inner, bg=bg_color)
+            term_frame.pack(side="left", padx=2, anchor="c")
+            apply(term_frame)
+            
+            if prefix:
+                lbl = tk.Label(term_frame, text=prefix, font=F(size, "bold"), bg=bg_color, fg=fg_color)
+                lbl.pack(side="left")
+                apply(lbl)
+                
+            frac_frame = tk.Frame(term_frame, bg=bg_color)
+            frac_frame.pack(side="left", padx=1, anchor="c")
+            apply(frac_frame)
+            
+            frac_size = max(12, int(size * 0.65)) 
+            
+            num_lbl = tk.Label(frac_frame, text=num_str, font=F(frac_size, "bold"), bg=bg_color, fg=fg_color)
+            num_lbl.pack(side="top")
+            apply(num_lbl)
+            
+            bar = tk.Frame(frac_frame, bg=fg_color, height=max(2, size//15))
+            bar.pack(side="top", fill="x", pady=1)
+            bar._is_frac_bar = True  
+            apply(bar)
+            
+            den_lbl = tk.Label(frac_frame, text=den_str, font=F(frac_size, "bold"), bg=bg_color, fg=fg_color)
+            den_lbl.pack(side="top")
+            apply(den_lbl)
+            
+            if suffix:
+                lbl = tk.Label(term_frame, text=suffix, font=F(size, "bold"), bg=bg_color, fg=fg_color)
+                lbl.pack(side="left")
+                apply(lbl)
+        else:
+            lbl = tk.Label(inner, text=token, font=F(size, "bold"), bg=bg_color, fg=fg_color)
+            lbl.pack(side="left", padx=3)
+            apply(lbl)
+
+
+class MathButton(tk.Frame):
+    """A button that supports complex math rendering (like vertical fractions)."""
+    def __init__(self, parent, command=None, bg=SURFACE, fg=INK, hover_bg="#EEF3F6", **kw):
+        super().__init__(parent, bg=bg, cursor="hand2", **kw)
+        self._base = bg
+        self._hover = hover_bg
+        self._fg = fg
+        self._command = command
+        self._last_text = ""
+        self._last_size = 40
+        
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<ButtonRelease-1>", self._on_click)
+
+    def _bind_all(self, w):
+        w.bind("<Enter>", self._on_enter)
+        w.bind("<Leave>", self._on_leave)
+        w.bind("<ButtonRelease-1>", self._on_click)
+
+    def _on_enter(self, e):
+        self._paint(self._hover)
+        
+    def _on_leave(self, e):
+        self._paint(self._base)
+
+    def _on_click(self, e):
+        if self._command:
+            self._command()
+
+    def _paint(self, bg_color):
+        self.configure(bg=bg_color)
+        for w in self.winfo_children():
+            w.configure(bg=bg_color)
+            for sub in w.winfo_children():
+                if getattr(sub, "_is_frac_bar", False):
+                    continue
+                sub.configure(bg=bg_color)
+                for sub2 in sub.winfo_children():
+                    if getattr(sub2, "_is_frac_bar", False):
+                        continue
+                    sub2.configure(bg=bg_color)
+
+    def set_content(self, text, size=40):
+        self._last_text = text
+        self._last_size = size
+        render_math(self, text, size, self._base, self._fg, self._bind_all)
+
+    def set_colors(self, bg, fg, hover_bg):
+        self._base = bg
+        self._hover = hover_bg
+        self._fg = fg
+        self._paint(bg)
+        self.set_content(self._last_text, self._last_size)
+
 
 # ---------------------------------------------------------------------------
 # Reusable widgets
 # ---------------------------------------------------------------------------
 class FlatButton(tk.Label):
-    """A flat, colored button with a hover state.
-
-    Built on a Label so colors render the same on Windows, macOS and Linux
-    (macOS ignores background colors on regular tk.Buttons).
-    """
-
     def __init__(self, parent, text="", command=None, bg=CHALK, fg="white",
                  hover_bg=None, font=None, padx=18, pady=10, **kw):
         super().__init__(parent, text=text, bg=bg, fg=fg, font=font or F(12, "bold"),
@@ -176,8 +310,6 @@ class FlatButton(tk.Label):
 
 
 class Toggle(FlatButton):
-    """An On/Off switch for settings."""
-
     def __init__(self, parent, value=False):
         super().__init__(parent, "", self.flip, font=F(11, "bold"), padx=0, pady=6, width=6)
         self.set(value)
@@ -196,8 +328,6 @@ class Toggle(FlatButton):
 
 
 class OperationTile(tk.Frame):
-    """Large clickable tile for choosing a drill on the main menu."""
-
     def __init__(self, parent, symbol, name, color, command):
         super().__init__(parent, bg=color, cursor="hand2")
         self.color = color
@@ -225,8 +355,6 @@ class OperationTile(tk.Frame):
 
 
 class Header(tk.Frame):
-    """Chalkboard header bar with a title, subtitle, action buttons and accent stripe."""
-
     def __init__(self, parent, title, subtitle="", accent=PENCIL):
         super().__init__(parent, bg=CHALK)
         self.columnconfigure(0, weight=1)
@@ -321,11 +449,18 @@ class MathGameApp(tk.Tk):
         self.minsize(820, 620)
         self.configure(bg=PAPER)
 
+        # Fullscreen setup
+        self.is_fullscreen = False
+        self.bind("<f>", self.toggle_fullscreen)
+        self.bind("<F>", self.toggle_fullscreen)
+        self.bind("<Escape>", self.exit_fullscreen)
+
         # Make the main window grid resizable
         self.rowconfigure(0, weight=1)
         self.columnconfigure(0, weight=1)
 
         self.load_settings()
+        seed_all_time_scores()
 
         # Container for all frames
         self.container = tk.Frame(self, bg=PAPER)
@@ -341,6 +476,16 @@ class MathGameApp(tk.Tk):
             frame.grid(row=0, column=0, sticky="nsew")
 
         self.show_frame("MainMenu")
+
+    def toggle_fullscreen(self, event=None):
+        if event and event.widget.winfo_class() == "Entry":
+            return
+        self.is_fullscreen = not self.is_fullscreen
+        self.attributes("-fullscreen", self.is_fullscreen)
+
+    def exit_fullscreen(self, event=None):
+        self.is_fullscreen = False
+        self.attributes("-fullscreen", False)
 
     def load_settings(self):
         self.settings = dict(DEFAULT_SETTINGS)
@@ -358,7 +503,6 @@ class MathGameApp(tk.Tk):
 
     def show_frame(self, page_name, *args):
         frame = self.frames[page_name]
-        # Call an on_show method if it exists to refresh data
         if hasattr(frame, "on_show"):
             frame.on_show(*args)
         frame.tkraise()
@@ -375,10 +519,12 @@ class MainMenu(tk.Frame):
         header = Header(self, "Arithmetic Drills",
                         "Timed math practice, from basic facts through pre-algebra. Pick a drill to start.")
         header.grid(row=0, column=0, sticky="ew")
+        
+        # Add the Fullscreen action (uses unicode Square Four Corners symbol)
+        header.add_action("\u26F6", self.controller.toggle_fullscreen)
         header.add_action("?", self.show_help)
         header.add_action("\u2699  Settings", self.prompt_password)
 
-        # 4x2 grid of drill tiles: arithmetic on top, pre-algebra below
         body = tk.Frame(self, bg=PAPER)
         body.grid(row=1, column=0, sticky="nsew", padx=40, pady=(24, 10))
         for c in range(4):
@@ -392,7 +538,6 @@ class MainMenu(tk.Frame):
                                  lambda k=key: controller.show_frame("GameScreen", k))
             tile.grid(row=idx // 4, column=idx % 4, sticky="nsew", padx=7, pady=7)
 
-        # Scoreboards & Quit buttons
         footer = tk.Frame(self, bg=PAPER)
         footer.grid(row=2, column=0, sticky="ew", padx=47, pady=(4, 26))
         footer.columnconfigure(0, weight=3)
@@ -413,6 +558,8 @@ class MainMenu(tk.Frame):
             "2. Read the problem and choose the correct answer.\n\n"
             "3. Click the answer with your mouse, or press the Left or Right arrow keys (you can also use the Control key instead of the Left arrow). \n\n"
             "4. Answer as many as you can before the timer runs out!\n\n"
+            "5. Press 'Spacebar' at any time to pause the game.\n\n"
+            "6. Press 'F' to play in fullscreen mode, and 'Escape' to exit fullscreen.\n\n"
             "Note: Wrong answers lower your score, so think carefully before you guess."
         )
         
@@ -420,7 +567,6 @@ class MainMenu(tk.Frame):
         lbl.pack(padx=10, pady=(0, 20))
         
         FlatButton(body, "OK", win.destroy, bg=CHALK, fg="white").pack()
-        
         center_dialog(win, self.controller)
 
     def prompt_password(self):
@@ -458,8 +604,12 @@ class GameScreen(tk.Frame):
         self.controller = controller
         self.category = "+"
         self.timer_id = None
+        self.countdown_id = None
+        self.pause_delay_id = None
         self.calculated_score = 0
         self.is_flashing = False
+        self.is_paused = False
+        self.is_countdown = False
         self.time_remaining = 0
         self.total_time = 1
         self._is_root = False
@@ -478,7 +628,6 @@ class GameScreen(tk.Frame):
         self.play_frame.rowconfigure(1, weight=3)
         self.play_frame.rowconfigure(2, weight=2)
 
-        # Timer row: label, progress bar, countdown
         timer_row = tk.Frame(self.play_frame, bg=PAPER)
         timer_row.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         timer_row.columnconfigure(1, weight=1)
@@ -498,10 +647,12 @@ class GameScreen(tk.Frame):
         self.problem_accent.pack(fill="x")
         problem_inner = tk.Frame(self.problem_card, bg=SURFACE)
         problem_inner.pack(expand=True)
-        self.problem_label = tk.Label(problem_inner, text="", font=F(60, "bold"), bg=SURFACE, fg=INK)
-        self.problem_label.pack()
+        
+        self.problem_container = tk.Frame(problem_inner, bg=SURFACE)
+        self.problem_container.pack()
+        
         self.instruction_label = tk.Label(problem_inner, text="", font=F(12), bg=SURFACE, fg=MUTED)
-        self.instruction_label.pack(pady=(0, 6))
+        self.instruction_label.pack(pady=(6, 6))
 
         # Answer buttons
         self.buttons_frame = tk.Frame(self.play_frame, bg=PAPER)
@@ -510,15 +661,23 @@ class GameScreen(tk.Frame):
         self.buttons_frame.columnconfigure(0, weight=1, uniform="ans")
         self.buttons_frame.columnconfigure(1, weight=1, uniform="ans")
 
-        answer_style = dict(bg=SURFACE, fg=INK, hover_bg=self.ANSWER_HOVER, font=F(40, "bold"),
+        answer_style = dict(bg=SURFACE, fg=INK, hover_bg=self.ANSWER_HOVER,
                             highlightthickness=2, highlightbackground=BORDER, highlightcolor=BORDER)
-        self.left_btn = FlatButton(self.buttons_frame, "", lambda: self.check_answer("left"), **answer_style)
+        self.left_btn = MathButton(self.buttons_frame, command=lambda: self.check_answer("left"), **answer_style)
         self.left_btn.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        self.right_btn = FlatButton(self.buttons_frame, "", lambda: self.check_answer("right"), **answer_style)
+        self.right_btn = MathButton(self.buttons_frame, command=lambda: self.check_answer("right"), **answer_style)
         self.right_btn.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
 
         tk.Label(self.play_frame, text="Keyboard shortcuts:  \u2190 or Ctrl picks the left answer,  \u2192 picks the right",
                  font=F(10), bg=PAPER, fg=MUTED).grid(row=3, column=0, pady=(12, 0))
+
+        # Countdown label (Fix: Removed expand=True which breaks the grid layout)
+        self.countdown_label = tk.Label(self.play_frame, text="", font=F(120, "bold"), bg=PAPER, fg=CHALK)
+
+        # Pause overlay
+        self.pause_overlay = tk.Frame(self.play_frame, bg=CHALK)
+        tk.Label(self.pause_overlay, text="Game paused\n\nPress the Spacebar to resume", 
+                 font=F(28, "bold"), bg=CHALK, fg="white", justify="center").pack(expand=True)
 
         # ---------------- Results view (hidden initially) ----------------
         self.results_frame = tk.Frame(self, bg=PAPER)
@@ -579,44 +738,104 @@ class GameScreen(tk.Frame):
         self.time_remaining = self.controller.settings["game_time"]
         self.total_time = max(1, self.time_remaining)
         self.is_flashing = False
+        self.is_paused = False
+        self.is_countdown = True
 
         if self.timer_id:
             self.after_cancel(self.timer_id)
             self.timer_id = None
+        if self.countdown_id:
+            self.after_cancel(self.countdown_id)
+            self.countdown_id = None
+        if self.pause_delay_id:
+            self.after_cancel(self.pause_delay_id)
+            self.pause_delay_id = None
 
-        # Swap to the active game view
+        self.pause_overlay.place_forget()
         self.results_frame.grid_forget()
         self.play_frame.grid(row=1, column=0, sticky="nsew", padx=48, pady=24)
-        self.update_idletasks()  # so the problem card knows its width for font sizing
+        self.update_idletasks()
 
-        # Reset colors just in case
         self._reset_answer_colors(self.left_btn)
         self._reset_answer_colors(self.right_btn)
 
-        # Bind keys
         self.controller.bind("<Left>", lambda e: self.check_answer("left"))
         self.controller.bind("<Control_L>", lambda e: self.check_answer("left"))
         self.controller.bind("<Control_R>", lambda e: self.check_answer("left"))
         self.controller.bind("<Right>", lambda e: self.check_answer("right"))
+        self.controller.bind("<space>", self.toggle_pause)
 
-        self.generate_problem()
-        self.update_timer()
+        # Clear the timer text initially during the countdown
+        mins, secs = divmod(self.time_remaining, 60)
+        self.time_label.config(text=f"{mins}:{secs:02d}", fg=CHALK)
+        self.draw_progress()
+
+        # Hide problem and buttons, show countdown
+        self.problem_card.grid_remove()
+        self.buttons_frame.grid_remove()
+        self.countdown_label.grid(row=1, column=0, rowspan=2)
+        self.run_countdown(3)
+
+    def run_countdown(self, count):
+        if count > 0:
+            self.countdown_label.config(text=str(count))
+            self.countdown_id = self.after(1000, lambda: self.run_countdown(count - 1))
+        else:
+            self.countdown_label.grid_remove()
+            self.problem_card.grid()
+            self.buttons_frame.grid()
+            self.is_countdown = False
+            self.generate_problem()
+            self.update_timer()
+
+    def toggle_pause(self, event=None):
+        if self.is_countdown or self.time_remaining <= 0:
+            return
+
+        # Ignore extra spacebar presses if we are currently in the 0.5s resume delay
+        if self.pause_delay_id:
+            return
+
+        if not self.is_paused:
+            self.is_paused = True
+            if self.timer_id:
+                self.after_cancel(self.timer_id)
+                self.timer_id = None
+            self.pause_overlay.place(relx=0, rely=0, relwidth=1, relheight=1)
+            self.pause_overlay.lift()
+        else:
+            self.pause_overlay.place_forget()
+            # 0.5 second delay before timer resumes and inputs are allowed
+            self.pause_delay_id = self.after(500, self.resume_from_pause)
+
+    def resume_from_pause(self):
+        self.pause_delay_id = None
+        self.is_paused = False
+        if self.time_remaining > 0:
+            self.update_timer()
 
     def exit_game(self):
         if self.timer_id:
             self.after_cancel(self.timer_id)
             self.timer_id = None
+        if self.countdown_id:
+            self.after_cancel(self.countdown_id)
+            self.countdown_id = None
+        if self.pause_delay_id:
+            self.after_cancel(self.pause_delay_id)
+            self.pause_delay_id = None
+            
         self.controller.unbind("<Left>")
         self.controller.unbind("<Control_L>")
         self.controller.unbind("<Control_R>")
         self.controller.unbind("<Right>")
+        self.controller.unbind("<space>")
         self.controller.show_frame("MainMenu")
 
     # ------------------------------------------------------------------
     # Problem generation
     # ------------------------------------------------------------------
     def rand(self, lo, hi, signed=True):
-        """Random integer in [lo, hi]; made negative half the time when negatives are on."""
         v = random.randint(lo, hi)
         if signed and self.neg and v != 0 and random.random() < 0.5:
             v = -v
@@ -636,7 +855,7 @@ class GameScreen(tk.Frame):
         a, b = self.rand(lo, hi), self.rand(lo, hi)
         if not self.neg and a < b:
             a, b = b, a
-        mistakes = [a + b] if self.neg else []  # e.g. treating 5 − (−3) as 5 − 3
+        mistakes = [a + b] if self.neg else []
         return f"{fmt_num(a)} {MINUS} {fmt_term(b)} =", a - b, mistakes
 
     def gen_multiplication(self, lo, hi):
@@ -662,28 +881,27 @@ class GameScreen(tk.Frame):
             return f"{fmt_term(n)}³ =", n ** 3, [3 * n, n * n]
         n = random.randint(sq_lo, sq_hi)
         sq = n * n
-        self._is_root = True  # don't offer −n: it squares to the same number
+        self._is_root = True
         mistakes = [sq // 2] if sq % 2 == 0 else []
         return f"\u221A{sq} =", n, mistakes
 
     def gen_order_of_ops(self, lo, hi):
-        f_hi = max(1, min(hi, 12))   # keep multiplication facts mental-math sized
+        f_hi = max(1, min(hi, 12))
         f_lo = min(lo, f_hi)
         form = random.randint(1, 5)
-        if form == 1:    # a + b × c
+        if form == 1:
             a, b, c = self.rand(lo, hi), self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
             return (f"{fmt_num(a)} + {fmt_term(b)} × {fmt_term(c)} =", a + b * c, [(a + b) * c])
-        if form == 2:    # a − b × c
+        if form == 2:
             b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
             a = self.rand(lo, hi) if self.neg else b * c + random.randint(lo, hi)
             return (f"{fmt_num(a)} {MINUS} {fmt_term(b)} × {fmt_term(c)} =", a - b * c, [(a - b) * c])
-        if form == 3:    # a × b + c
+        if form == 3:
             a, b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi), self.rand(lo, hi)
             return (f"{fmt_num(a)} × {fmt_term(b)} + {fmt_term(c)} =", a * b + c, [a * (b + c)])
-        if form == 4:    # (a + b) × c
+        if form == 4:
             a, b, c = self.rand(f_lo, f_hi), self.rand(f_lo, f_hi), self.rand(f_lo, f_hi)
             return (f"({fmt_num(a)} + {fmt_term(b)}) × {fmt_term(c)} =", (a + b) * c, [a + b * c])
-        # form 5: a − b + c  (left to right, not "add first")
         a, b, c = self.rand(lo, hi), self.rand(lo, hi), self.rand(lo, hi)
         if not self.neg and a < b:
             a, b = b, a
@@ -698,7 +916,6 @@ class GameScreen(tk.Frame):
 
         def constant(limit):
             k = random.randint(max(1, lo), max(1, hi))
-            # Subtracting is only allowed without negatives if the result stays >= 0
             if (self.neg or k <= limit) and random.random() < 0.5:
                 k = -k
             return k
@@ -709,28 +926,28 @@ class GameScreen(tk.Frame):
         form = random.choice(forms)
         x = self.rand(lo, hi)
 
-        if form == "add":        # x + k = c
+        if form == "add":
             k = constant(x)
             c = x + k
             return f"{fmt_linear(1, k)} = {fmt_num(c)}", x, [c + k]
-        if form == "mul":        # ax = c
+        if form == "mul":
             a = coef()
             c = a * x
             return f"{fmt_linear(a, 0)} = {fmt_num(c)}", x, [c - a, c * a]
-        if form == "div":        # x ÷ a = q
+        if form == "div":
             a = coef()
             q = x
             x = a * q
             return f"x ÷ {fmt_term(a)} = {fmt_num(q)}", x, [q, q + a]
-        # two-step: ax + k = c
+        
         a = coef()
         k = constant(a * x)
         c = a * x + k
-        mistakes = [c - k]  # forgot to divide
+        mistakes = [c - k]
         if (c + k) % a == 0:
-            mistakes.append((c + k) // a)  # used the wrong inverse operation
+            mistakes.append((c + k) // a)
         if c % a == 0:
-            mistakes.append(c // a - k)  # undid steps in the wrong order
+            mistakes.append(c // a - k)
         return f"{fmt_linear(a, k)} = {fmt_num(c)}", x, mistakes
 
     def gen_fractions(self, lo, hi):
@@ -750,13 +967,13 @@ class GameScreen(tk.Frame):
 
         if op == "+":
             correct = f1 + f2
-            mistakes = [Fraction(n1 + n2, d1 + d2)]   # added tops and bottoms
+            mistakes = [Fraction(n1 + n2, d1 + d2)]
         elif op == MINUS:
             correct = f1 - f2
             mistakes = [Fraction(n1 - n2, d1 + d2)]
         else:
             correct = f1 * f2
-            mistakes = [Fraction(n1 * d2, d1 * n2)] if n2 != 0 else []  # divided instead
+            mistakes = [Fraction(n1 * d2, d1 * n2)] if n2 != 0 else []
 
         left = fmt_raw_fraction(n1, d1)
         right = fmt_raw_fraction(n2, d2)
@@ -771,7 +988,6 @@ class GameScreen(tk.Frame):
     }
 
     def pick_wrong(self, correct, mistakes):
-        """Choose a wrong answer, favoring the mistakes students actually make."""
         candidates = []
         for m in mistakes:
             if m is None or m == correct or m in candidates:
@@ -780,7 +996,6 @@ class GameScreen(tk.Frame):
                 continue
             candidates.append(m)
 
-        # With negatives on, the classic error is getting the sign wrong
         if self.neg and correct != 0 and not self._is_root and random.random() < 0.35:
             return -correct
         if candidates and random.random() < 0.7:
@@ -805,14 +1020,14 @@ class GameScreen(tk.Frame):
         return f"x = {fmt_num(value)}" if self.category == "x" else fmt_num(value)
 
     def show_problem_text(self, text):
-        """Shrink the problem font for longer problems so it always fits the card."""
         available = max(300, self.problem_card.winfo_width() - 60)
         size = 60
         self._measure_font.configure(family=FONT_FAMILY, size=size)
         while size > 28 and self._measure_font.measure(text) > available:
             size -= 4
             self._measure_font.configure(size=size)
-        self.problem_label.config(text=text, font=F(size, "bold"))
+        
+        render_math(self.problem_container, text, size, SURFACE, INK)
 
     def generate_problem(self):
         lo, hi = self.number_range()
@@ -832,15 +1047,15 @@ class GameScreen(tk.Frame):
             self.right_val = self.correct_ans
             self.correct_side = "right"
 
-        self.left_btn.config(text=self.fmt_answer(self.left_val))
-        self.right_btn.config(text=self.fmt_answer(self.right_val))
+        self.left_btn.set_content(self.fmt_answer(self.left_val))
+        self.right_btn.set_content(self.fmt_answer(self.right_val))
 
     # ------------------------------------------------------------------
     # Answering and timing
     # ------------------------------------------------------------------
     def check_answer(self, side):
-        # Prevent input if time is up or if currently flashing
-        if self.time_remaining <= 0 or self.is_flashing:
+        # Ignore input if timer is stopped, game is paused, or currently in countdown/flash
+        if self.time_remaining <= 0 or self.is_flashing or self.is_paused or self.is_countdown:
             return
 
         self.is_flashing = True
@@ -852,18 +1067,15 @@ class GameScreen(tk.Frame):
             self.failure_count += 1
             flash_color = DANGER
 
-        # Flash the selected answer
         target_btn = self.left_btn if side == "left" else self.right_btn
         target_btn.set_colors(flash_color, "white", flash_color)
 
-        # Wait 150ms, revert the color, and move to the next problem
         self.after(150, lambda: self.reset_flash_and_continue(target_btn))
 
     def reset_flash_and_continue(self, target_btn):
         self._reset_answer_colors(target_btn)
         self.is_flashing = False
 
-        # Only generate the next problem if the game hasn't ended during the flash
         if self.time_remaining > 0:
             self.generate_problem()
 
@@ -893,6 +1105,7 @@ class GameScreen(tk.Frame):
         self.controller.unbind("<Control_L>")
         self.controller.unbind("<Control_R>")
         self.controller.unbind("<Right>")
+        self.controller.unbind("<space>")
 
         self.calculated_score = self.success_count - self.failure_count
         total_answered = self.success_count + self.failure_count
@@ -923,6 +1136,13 @@ class GameScreen(tk.Frame):
 
         with open(filename, "w") as f:
             json.dump(scores, f)
+            
+        all_time = load_all_time_scores()
+        all_time.append({"name": name, "score": self.calculated_score, "category": self.category})
+        all_time.sort(key=lambda x: x["score"], reverse=True)
+        
+        with open(ALL_TIME_FILE, "w") as f:
+            json.dump(all_time[:5], f)
 
         self.exit_game()
 
@@ -941,20 +1161,27 @@ class ScoreboardScreen(tk.Frame):
 
         self.scores_frame = tk.Frame(self, bg=PAPER)
         self.scores_frame.grid(row=1, column=0, sticky="nsew", padx=26, pady=20)
-        for i in range(4):
+        
+        for i in range(3):
             self.scores_frame.columnconfigure(i, weight=1, uniform="board")
 
     def on_show(self):
-        # Clear existing score lists
         for widget in self.scores_frame.winfo_children():
             widget.destroy()
 
-        for idx, key in enumerate(CATEGORY_ORDER):
-            name, color, symbol, _ = CATEGORY_INFO[key]
-            scores = load_scores(key)
+        display_categories = CATEGORY_ORDER + ["ALL"]
+
+        for idx, key in enumerate(display_categories):
+            if key == "ALL":
+                name = "All-Time Highs"
+                color = "#1C2B33" 
+                scores = load_all_time_scores()
+            else:
+                name, color, symbol, _ = CATEGORY_INFO[key]
+                scores = load_scores(key)
 
             board = card(self.scores_frame)
-            board.grid(row=idx // 4, column=idx % 4, sticky="new", padx=6, pady=6)
+            board.grid(row=idx // 3, column=idx % 3, sticky="new", padx=6, pady=4)
 
             top = tk.Frame(board, bg=color)
             top.pack(fill="x")
@@ -974,8 +1201,16 @@ class ScoreboardScreen(tk.Frame):
 
                 if i < len(scores):
                     player = str(scores[i]["name"])
-                    if len(player) > 12:
-                        player = player[:11] + "\u2026"
+                    
+                    if key == "ALL":
+                        cat_sym = scores[i].get("category", "")
+                        if len(player) > 8:
+                            player = player[:7] + "\u2026"
+                        player += f" ({cat_sym})"
+                    else:
+                        if len(player) > 12:
+                            player = player[:11] + "\u2026"
+                            
                     score_text = fmt_num(scores[i]["score"])
                     name_color = INK
                 else:
@@ -1003,7 +1238,6 @@ class SettingsScreen(tk.Frame):
         body.columnconfigure(0, weight=1, uniform="settings")
         body.columnconfigure(1, weight=1, uniform="settings")
 
-        # Number range card
         range_card = card(body)
         range_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         ri = tk.Frame(range_card, bg=SURFACE)
@@ -1018,7 +1252,6 @@ class SettingsScreen(tk.Frame):
         self.max_spin = self._spin_field(ri, 3, "Largest number", "Highest value used in problems", 0, 100)
         self.time_spin = self._spin_field(ri, 4, "Game time (seconds)", "How long each drill lasts", 0, 180)
 
-        # Pre-algebra options card
         opt_card = card(body)
         opt_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         oi = tk.Frame(opt_card, bg=SURFACE)
@@ -1035,7 +1268,6 @@ class SettingsScreen(tk.Frame):
         self.unlike_toggle = self._toggle_field(oi, 4, "Unlike denominators",
                                                 "Adds problems like 1/3\u00a0+\u00a01/4 to Fractions")
 
-        # Classroom tools card
         tools = card(body)
         tools.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         ti = tk.Frame(tools, bg=SURFACE)
@@ -1045,7 +1277,6 @@ class SettingsScreen(tk.Frame):
         FlatButton(ti, "Clear scoreboards", self.reset_scoreboard, bg="#FBEAEA", fg=DANGER,
                    hover_bg="#F5D5D5").pack(side="left", padx=4)
 
-        # Status line and save / cancel
         actions = tk.Frame(body, bg=PAPER)
         actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         self.status = tk.Label(actions, text="", font=F(11), bg=PAPER, fg=SUCCESS)
@@ -1109,7 +1340,7 @@ class SettingsScreen(tk.Frame):
 
     def reset_scoreboard(self):
         confirm = messagebox.askyesno("Clear all scoreboards",
-                                      "This permanently deletes every saved score in all drills. Continue?")
+                                      "This permanently deletes every saved score in all drills. \n\nNote: The All-Time High Scores list will NOT be erased. Continue?")
         if confirm:
             for filename in SCORE_FILES.values():
                 try:
@@ -1117,7 +1348,7 @@ class SettingsScreen(tk.Frame):
                         json.dump([], f)
                 except Exception:
                     pass
-            self.show_status("All scoreboards cleared.")
+            self.show_status("All category scoreboards cleared.")
 
     def change_password(self):
         win, body = make_dialog(self.controller, "Change password", "Change password",
