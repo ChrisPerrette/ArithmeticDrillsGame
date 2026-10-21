@@ -1,4 +1,4 @@
-# Arithmetic Drills Game (`math_game_3.py`)
+# Arithmetic Drills Game (`math_game.py`)
 
 A classroom-styled, customizable math drill application built with Python and Tkinter. Features advanced vertical fraction rendering, customizable audio feedback, duration-partitioned scoreboards, and secret teacher modifiers.
 
